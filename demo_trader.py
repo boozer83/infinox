@@ -24,9 +24,13 @@
   (주말 갭은 서버 SL로도 막을 수 없어서)
 
 안전장치:
-- 데모 계좌가 아니면 시작하지 않고, 실행 중 계좌가 바뀌어도 즉시 멈춤
+- 기본은 데모 계좌 전용. 실계좌는 --live 옵션을 줄 때만 실행. 실행 중 로그인 계좌가 바뀌면 즉시 멈춤
 - 이 스크립트의 매직 넘버가 붙은 포지션만 확인/관리
 - 증거금이 부족하면 진입하지 않음
+- 최대 lot: 진입할 lot이 MAX_LOT을 넘으면 그날 신규 진입 정지 (설정 실수/버그 방지)
+- 하루 손실 한도: 오늘 이 전략의 청산 손익이 그날 시작 잔고의 DAILY_LOSS_PCT(15%) 이상 손실이면 그날 신규 진입 정지
+- 계좌 손실 한도: 평가금이 기록된 최고 잔고보다 ACCOUNT_STOP_PCT(30%) 이상 줄면 신규 진입 중단.
+  demo_log/risk_state.json에 "halted"로 남아서 재시작해도 유지됨. 확인 후 그 파일을 지우면 다시 시작
 
 기록 (demo_log/ 폴더): trades.csv (거래별 신호/체결/슬리피지/결과), events.log (실행 로그)
 
@@ -38,9 +42,11 @@
 사용법:
   python demo_trader.py            # 실행 (Ctrl+C로 종료)
   python demo_trader.py --dry-run  # 주문 없이 신호만 계산해서 출력 (텔레그램 전송 안 함)
+  python demo_trader.py --live     # 실계좌에서 실행 (데모에서 충분히 확인한 뒤에만)
 """
 import argparse
 import csv
+import json
 import logging
 import time
 from datetime import datetime, timezone
@@ -70,6 +76,10 @@ NO_ENTRY_UNTIL = "21:00"
 # 횡보 정지: 오늘(서버 날짜) 완성된 1시간봉의 SAR 전환이 이 횟수 이상이면 그날 신규 진입 안 함
 MAX_H1_FLIPS = 3
 FRIDAY_CLOSE = "23:30"
+# 실계좌 안전장치
+MAX_LOT = 1.0             # 한 번에 진입할 최대 lot
+DAILY_LOSS_PCT = 15.0     # 하루 손실 한도 (그날 시작 잔고 대비 %). 10% 이하는 마틴 회복을 끊어서 2025~26 백테스트에서 오히려 나빴음
+ACCOUNT_STOP_PCT = 30.0   # 계좌 손실 한도 (최고 잔고 대비 평가금 감소 %)
 # 주문
 MAGIC = 20261017
 DEVIATION = 30            # 허용 슬리피지 (포인트, 0.30달러)
@@ -80,6 +90,7 @@ H1_BARS = 400
 LOG_DIR = Path(__file__).resolve().parent / "demo_log"
 TRADES_CSV = LOG_DIR / "trades.csv"
 STATE_JSON = LOG_DIR / "state.json"
+RISK_JSON = LOG_DIR / "risk_state.json"
 FIELDS = ["signal_bar", "side", "level", "lot", "signal_price", "order_time", "fill_price", "slippage", "spread",
           "sl", "tp", "ticket", "close_time", "close_price", "profit", "result"]
 
@@ -119,14 +130,58 @@ def connect():
         raise SystemExit(f"{SYMBOL} 종목을 찾을 수 없습니다")
 
 
-def check_demo():
+def check_demo(allow_live=False, login=None):
+    """데모 계좌인지 확인 (allow_live면 실계좌도 허용). login을 주면 그 계좌에서 바뀌었는지도 확인"""
     acc = mt5.account_info()
     if acc is None:
         raise SystemExit("로그인된 계좌가 없습니다")
-    if acc.trade_mode != mt5.ACCOUNT_TRADE_MODE_DEMO:
+    if login is not None and acc.login != login:
         mt5.shutdown()
-        raise SystemExit(f"데모 계좌가 아닙니다 ({acc.login}, {acc.server}). 안전을 위해 종료합니다.")
+        raise SystemExit(f"로그인 계좌가 바뀌었습니다 ({login} -> {acc.login}). 안전을 위해 종료합니다.")
+    if acc.trade_mode != mt5.ACCOUNT_TRADE_MODE_DEMO and not allow_live:
+        mt5.shutdown()
+        raise SystemExit(f"데모 계좌가 아닙니다 ({acc.login}, {acc.server}). 실계좌는 --live 옵션으로만 실행합니다.")
     return acc
+
+
+def account_kind(acc):
+    return "데모" if acc.trade_mode == mt5.ACCOUNT_TRADE_MODE_DEMO else "실계좌"
+
+
+def load_risk():
+    try:
+        return json.loads(RISK_JSON.read_text(encoding="utf-8"))
+    except (FileNotFoundError, ValueError):
+        return {}
+
+
+def risk_block(now, lot):
+    """신규 진입을 막아야 하면 이유(문자열), 아니면 None"""
+    acc = mt5.account_info()
+    risk = load_risk()
+    if risk.get("halted"):
+        return f"계좌 손실 한도로 중단된 상태 ({risk['halted']}). 확인 후 {RISK_JSON.name}을 지우면 다시 시작"
+    peak = max(risk.get("peak_balance", 0.0), acc.balance)
+    if peak != risk.get("peak_balance"):
+        risk["peak_balance"] = peak
+        RISK_JSON.write_text(json.dumps(risk, ensure_ascii=False, indent=2), encoding="utf-8")
+    if acc.equity <= peak * (1 - ACCOUNT_STOP_PCT / 100):
+        risk["halted"] = f"{now:%Y-%m-%d %H:%M} 평가금 {acc.equity:,.2f} / 최고 잔고 {peak:,.2f}"
+        RISK_JSON.write_text(json.dumps(risk, ensure_ascii=False, indent=2), encoding="utf-8")
+        send(f"🛑 계좌 손실 한도({ACCOUNT_STOP_PCT:g}%) 도달 -> 신규 진입을 중단합니다.\n{risk['halted']}\n"
+             f"확인 후 demo_log/{RISK_JSON.name}을 지우고 다시 실행하세요.")
+        return f"계좌 손실 한도 도달 ({risk['halted']})"
+    day_start = int(datetime(now.year, now.month, now.day, tzinfo=timezone.utc).timestamp())
+    deals = mt5.history_deals_get(day_start, day_start + 2 * 86400) or ()
+    trade_deals = [d for d in deals if d.type in (mt5.DEAL_TYPE_BUY, mt5.DEAL_TYPE_SELL)]
+    start_bal = acc.balance - sum(d.profit + d.commission + d.swap for d in trade_deals)
+    mine = sum(d.profit + d.commission + d.swap for d in trade_deals
+               if d.magic == MAGIC and d.entry == mt5.DEAL_ENTRY_OUT)
+    if start_bal > 0 and mine <= -DAILY_LOSS_PCT / 100 * start_bal:
+        return f"하루 손실 한도 도달 (오늘 {mine:+,.2f} / 시작 잔고 {start_bal:,.2f}의 {DAILY_LOSS_PCT:g}%)"
+    if lot > MAX_LOT:
+        return f"진입 lot {lot}이 최대 lot {MAX_LOT}을 넘음"
+    return None
 
 
 def rates(tf, n):
@@ -324,10 +379,12 @@ def main():
     global tg, clock
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true", help="주문 없이 신호만 계산")
+    ap.add_argument("--live", action="store_true", help="실계좌에서도 실행 (기본은 데모 전용)")
     args = ap.parse_args()
     setup_logging()
     connect()
-    acc = check_demo()
+    acc = check_demo(args.live)
+    kind = account_kind(acc)
     tg = Notifier()
     if args.dry_run:
         tg.enabled = False
@@ -337,11 +394,15 @@ def main():
     base = base_lot(clock.now())
     lots = " / ".join(f"{lot_for(i, base):g}" for i in range(MARTIN_MAX_LEVEL + 1))
     lots += f" lot (오늘 시작 잔고 기준, 1,000$당 {LOT_PER_1000} lot)"
-    log.info(f"시작: 계좌 {acc.login} ({acc.server}, 데모) 잔고 {acc.balance} {acc.currency}, {SYMBOL} "
-             f"SL {SL_USD} TP {TP_USD}, 마틴 {lots}{' [DRY-RUN]' if args.dry_run else ''}"
+    limits = f"최대 lot {MAX_LOT}, 하루 손실 한도 {DAILY_LOSS_PCT:g}%, 계좌 손실 한도 {ACCOUNT_STOP_PCT:g}%"
+    log.info(f"시작: 계좌 {acc.login} ({acc.server}, {kind}) 잔고 {acc.balance} {acc.currency}, {SYMBOL} "
+             f"SL {SL_USD} TP {TP_USD}, 마틴 {lots}, {limits}{' [DRY-RUN]' if args.dry_run else ''}"
              f", 텔레그램 {'켜짐' if tg.enabled else '꺼짐'}")
-    send(f"▶️ 자동매매 시작 (데모 {acc.login})\n전략: {STRATEGY_DESC}\n마틴 {lots}\n"
+    send(f"▶️ 자동매매 시작 ({kind} {acc.login})\n전략: {STRATEGY_DESC}\n마틴 {lots}\n안전장치: {limits}\n"
             f"{account_line()}\n{summary_line(clock.now(), MAGIC, SYMBOL)}")
+    if load_risk().get("halted"):
+        send(f"🛑 계좌 손실 한도로 중단된 상태입니다: {load_risk()['halted']}\n"
+             f"확인 후 demo_log/{RISK_JSON.name}을 지우면 다시 진입합니다.")
     if not args.dry_run and not mt5.terminal_info().trade_allowed:
         log.warning("MT5의 'Algo Trading'이 꺼져 있습니다. 켜야 주문이 들어갑니다.")
         send("⚠️ MT5의 'Algo Trading'이 꺼져 있습니다. 켜야 주문이 들어갑니다.")
@@ -354,6 +415,7 @@ def main():
         log.info(f"기존 포지션 이어받음: 티켓 {p.ticket} {open_row['side']} {p.volume}lot @ {p.price_open}")
 
     last_bar, last_close_try = None, 0.0
+    risk_notified = None      # 안전장치 알림은 하루 한 번만
     try:
         while True:
             if not mt5.terminal_info():
@@ -361,7 +423,7 @@ def main():
                 mt5.shutdown()
                 time.sleep(5)
                 connect()
-            check_demo()
+            check_demo(args.live, acc.login)
             clock.update()
             now = clock.now()
 
@@ -403,6 +465,11 @@ def main():
                         log.info(f"미국장 제외 시간({NO_ENTRY_FROM}~{NO_ENTRY_UNTIL})이라 신규 진입 안 함")
                     elif (flips := h1_flips_today(h1, now)) >= MAX_H1_FLIPS:
                         log.info(f"오늘 1시간봉 SAR 전환 {flips}번 (횡보)이라 신규 진입 안 함")
+                    elif reason := risk_block(now, lot_for(level, base)):
+                        log.info(f"안전장치: {reason} -> 신규 진입 안 함")
+                        if risk_notified != now.date():
+                            risk_notified = now.date()
+                            send(f"⛔ 안전장치: {reason}\n오늘은 신규 진입을 멈춥니다.")
                     else:
                         open_row = place(side, lot_for(level, base), level, bar.strftime("%Y-%m-%d %H:%M"), close)
             time.sleep(POLL_SEC)
