@@ -17,6 +17,10 @@
 
 주말 보호:
 - 금요일 FRIDAY_NO_ENTRY 이후 신규 진입 안 함, FRIDAY_CLOSE 이후 보유 포지션 시장가 청산
+미국장 제외:
+- 매일 NO_ENTRY_FROM ~ NO_ENTRY_UNTIL(서버시간 15:00~21:00) 신규 진입 안 함 (backtests/martin_scaled.py)
+횡보 정지:
+- 오늘 완성된 1시간봉 SAR 전환이 MAX_H1_FLIPS(3)번 이상이면 그날 신규 진입 안 함 (backtests/regime_switch.py)
   (주말 갭은 서버 SL로도 막을 수 없어서)
 
 안전장치:
@@ -59,6 +63,12 @@ MARTIN_MULT = 2
 MARTIN_MAX_LEVEL = 5
 # 주말 보호 (서버시간, 금요일)
 FRIDAY_NO_ENTRY = "22:30"
+# 미국장 제외 (서버시간, 매일): 이 시간에는 신규 진입 안 함. 보유 포지션은 서버 SL/TP로 계속 관리
+# 서버시간은 미국 서머타임을 따름 -> 한국시간 여름 21:00~03:00, 겨울 22:00~04:00
+NO_ENTRY_FROM = "15:00"
+NO_ENTRY_UNTIL = "21:00"
+# 횡보 정지: 오늘(서버 날짜) 완성된 1시간봉의 SAR 전환이 이 횟수 이상이면 그날 신규 진입 안 함
+MAX_H1_FLIPS = 3
 FRIDAY_CLOSE = "23:30"
 # 주문
 MAGIC = 20261017
@@ -144,6 +154,14 @@ def compute_signal(m5, h1):
     desc = (f"SAR {'상승' if up[-1] else '하락'}{'(전환)' if up[-1] != up[-2] else ''} "
             f"RSI {r[-1]:.1f} H1 SAR {'상승' if hdir == 1 else '하락'}")
     return side, m5.time.iat[-1], float(m5.close.iat[-1]), desc
+
+
+def h1_flips_today(h1, now):
+    """오늘(서버 날짜) 완성된 1시간봉 중 SAR 방향이 바뀐 봉의 수 (backtests/regime_switch.py와 같은 계산)"""
+    up = psar(h1.high.values, h1.low.values)
+    flip = up[1:] != up[:-1]
+    today = (h1.time.dt.date == now.date()).values[1:]
+    return int((flip & today).sum())
 
 
 def base_lot(now, deals=None):
@@ -381,6 +399,10 @@ def main():
                         log.info("오늘은 5단계 손절로 거래 정지 상태라 신호 무시")
                     elif friday and is_after(now, FRIDAY_NO_ENTRY):
                         log.info("금요일 마감 전이라 신규 진입 안 함")
+                    elif is_after(now, NO_ENTRY_FROM) and not is_after(now, NO_ENTRY_UNTIL):
+                        log.info(f"미국장 제외 시간({NO_ENTRY_FROM}~{NO_ENTRY_UNTIL})이라 신규 진입 안 함")
+                    elif (flips := h1_flips_today(h1, now)) >= MAX_H1_FLIPS:
+                        log.info(f"오늘 1시간봉 SAR 전환 {flips}번 (횡보)이라 신규 진입 안 함")
                     else:
                         open_row = place(side, lot_for(level, base), level, bar.strftime("%Y-%m-%d %H:%M"), close)
             time.sleep(POLL_SEC)
