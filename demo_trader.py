@@ -8,8 +8,9 @@
 - SL 7.5 / TP 3 달러를 주문과 함께 서버에 설정 (스크립트가 꺼져도 SL/TP는 작동)
 
 마틴 규칙 (backtests/daily_martin.py와 동일):
-- 첫 진입 0.03 lot. 손절로 끝나면 다음 진입 수량 x2, 익절이면 0.03으로 복귀
-  단계 0~5: 0.03 / 0.06 / 0.12 / 0.24 / 0.48 / 0.96
+- 시작 lot = 그날 시작 잔고 1,000달러당 0.03 lot (0.01 단위 내림, 최소 0.01). 하루 안에서는 같은 시작 lot 유지
+- 손절로 끝나면 다음 진입 수량 x2, 익절이면 시작 lot으로 복귀
+  잔고 1,000달러일 때 단계 0~5: 0.03 / 0.06 / 0.12 / 0.24 / 0.48 / 0.96 (10,000달러면 0.30 ~ 9.60)
 - 5단계(0.96)에서도 손절이면 그날은 신규 진입 정지
 - 서버시간 날짜가 바뀌면 단계 0부터 다시 시작
 - 단계는 오늘 이 스크립트가 청산한 거래내역(MT5 서버 기록)으로 계산 -> 스크립트를 껐다 켜도 이어짐
@@ -53,7 +54,7 @@ from telegram_notify import Notifier
 SL_USD = 7.5
 TP_USD = 3.0
 # 마틴
-BASE_LOT = 0.03
+LOT_PER_1000 = 0.03       # 그날 시작 잔고 1,000달러당 시작 lot
 MARTIN_MULT = 2
 MARTIN_MAX_LEVEL = 5
 # 주말 보호 (서버시간, 금요일)
@@ -145,8 +146,20 @@ def compute_signal(m5, h1):
     return side, m5.time.iat[-1], float(m5.close.iat[-1]), desc
 
 
+def base_lot(now, deals=None):
+    """그날 시작 잔고(현재 잔고 - 오늘 체결된 거래 손익) 기준 시작 lot"""
+    if deals is None:
+        day_start = int(datetime(now.year, now.month, now.day, tzinfo=timezone.utc).timestamp())
+        deals = mt5.history_deals_get(day_start, day_start + 2 * 86400) or ()
+    today = sum(d.profit + d.commission + d.swap for d in deals
+                if d.type in (mt5.DEAL_TYPE_BUY, mt5.DEAL_TYPE_SELL))
+    info = mt5.symbol_info(SYMBOL)
+    raw = (mt5.account_info().balance - today) / 1000 * LOT_PER_1000
+    return max(info.volume_min, round(int(raw / info.volume_step + 1e-9) * info.volume_step, 2))
+
+
 def martin_state(now):
-    """오늘(서버 날짜) 이 스크립트가 청산한 거래로 (현재 단계, 오늘 정지 여부) 계산"""
+    """오늘(서버 날짜) 이 스크립트가 청산한 거래로 (현재 단계, 오늘 정지 여부, 시작 lot) 계산"""
     day_start = int(datetime(now.year, now.month, now.day, tzinfo=timezone.utc).timestamp())
     deals = mt5.history_deals_get(day_start, day_start + 2 * 86400) or ()
     closes = sorted((d for d in deals if d.magic == MAGIC and d.symbol == SYMBOL and d.entry == mt5.DEAL_ENTRY_OUT),
@@ -160,12 +173,12 @@ def martin_state(now):
                 level += 1
         else:
             level = 0
-    return level, stopped
+    return level, stopped, base_lot(now, deals)
 
 
-def lot_for(level):
+def lot_for(level, base):
     info = mt5.symbol_info(SYMBOL)
-    lot = BASE_LOT * MARTIN_MULT ** level
+    lot = base * MARTIN_MULT ** level
     lot = round(round(lot / info.volume_step) * info.volume_step, 2)
     return min(max(lot, info.volume_min), info.volume_max)
 
@@ -277,9 +290,9 @@ def notify_close(row):
     profit = float(row["profit"])
     bal = mt5.account_info().balance
     pct = profit / (bal - profit) * 100 if bal - profit > 0 else 0.0
-    level, stopped = martin_state(clock.now())
+    level, stopped, base = martin_state(clock.now())
     icon = {"TP": "✅ 익절", "SL": "❌ 손절", "FRIDAY": "⏹ 금요일 청산"}.get(row["result"], "⏹ 청산")
-    nxt = "오늘 거래 정지 (5단계 손절)" if stopped else f"다음 진입 마틴 {level}단계 ({lot_for(level)} lot)"
+    nxt = "오늘 거래 정지 (5단계 손절)" if stopped else f"다음 진입 마틴 {level}단계 ({lot_for(level, base)} lot)"
     log.info(f"청산 {row['result']} @ {row['close_price']} 손익 {profit} -> {nxt}")
     send(f"{icon} {row.get('side', '')} {row.get('lot', '')} lot\n"
             f"{row.get('fill_price', '')} → {row['close_price']}\n"
@@ -303,11 +316,13 @@ def main():
     clock = ServerClock(SYMBOL)
     clock.update()
     scheduler = ReportScheduler(STATE_JSON, MAGIC, SYMBOL, send)
-    lots = " / ".join(f"{BASE_LOT * MARTIN_MULT ** i:g}" for i in range(MARTIN_MAX_LEVEL + 1))
+    base = base_lot(clock.now())
+    lots = " / ".join(f"{lot_for(i, base):g}" for i in range(MARTIN_MAX_LEVEL + 1))
+    lots += f" lot (오늘 시작 잔고 기준, 1,000$당 {LOT_PER_1000} lot)"
     log.info(f"시작: 계좌 {acc.login} ({acc.server}, 데모) 잔고 {acc.balance} {acc.currency}, {SYMBOL} "
-             f"SL {SL_USD} TP {TP_USD}, 마틴 {lots} lot{' [DRY-RUN]' if args.dry_run else ''}"
+             f"SL {SL_USD} TP {TP_USD}, 마틴 {lots}{' [DRY-RUN]' if args.dry_run else ''}"
              f", 텔레그램 {'켜짐' if tg.enabled else '꺼짐'}")
-    send(f"▶️ 자동매매 시작 (데모 {acc.login})\n전략: {STRATEGY_DESC}\n마틴 {lots} lot\n"
+    send(f"▶️ 자동매매 시작 (데모 {acc.login})\n전략: {STRATEGY_DESC}\n마틴 {lots}\n"
             f"{account_line()}\n{summary_line(clock.now(), MAGIC, SYMBOL)}")
     if not args.dry_run and not mt5.terminal_info().trade_allowed:
         log.warning("MT5의 'Algo Trading'이 꺼져 있습니다. 켜야 주문이 들어갑니다.")
@@ -359,7 +374,7 @@ def main():
                 log.info(f"봉 {bar:%m-%d %H:%M} 종가 {close}: {desc}"
                          + (f" -> 신호 {'매수' if side == 1 else '매도'}" if side else ""))
                 if side and not args.dry_run:
-                    level, stopped = martin_state(now)
+                    level, stopped, base = martin_state(now)
                     if my_positions():
                         log.info("포지션 보유 중이라 신호 무시")
                     elif stopped:
@@ -367,7 +382,7 @@ def main():
                     elif friday and is_after(now, FRIDAY_NO_ENTRY):
                         log.info("금요일 마감 전이라 신규 진입 안 함")
                     else:
-                        open_row = place(side, lot_for(level), level, bar.strftime("%Y-%m-%d %H:%M"), close)
+                        open_row = place(side, lot_for(level, base), level, bar.strftime("%Y-%m-%d %H:%M"), close)
             time.sleep(POLL_SEC)
     except KeyboardInterrupt:
         log.info("사용자 종료 (열린 포지션은 서버 SL/TP로 계속 관리됨)")

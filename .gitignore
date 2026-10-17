@@ -6,6 +6,7 @@ telegram.json
 
 # 실행 기록 / 백테스트 결과
 demo_log/
+trend_log/
 results/
 *.csv
 
