@@ -1,6 +1,9 @@
 # 틱 데이터 캐시 (수 GB, 실행하면 MT5에서 다시 받음)
 data/
 
+# 텔레그램 봇 토큰 (절대 올리지 말 것)
+telegram.json
+
 # 실행 기록 / 백테스트 결과
 demo_log/
 results/

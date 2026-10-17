@@ -34,6 +34,36 @@ MT5 터미널 경로는 자동으로 찾습니다. MT5가 여러 개 설치돼 �
 $env:MT5_TERMINAL_PATH = "C:\Program Files\Infinox MetaTrader 5 Terminal\terminal64.exe"
 ```
 
+## 텔레그램 알림 설정 (선택)
+
+진입·청산 때마다 거래 내용과 **오늘/이번주/이번달 수익률**을 보내고, **일일·주간·월간 리포트**를 보냅니다.
+설정 파일이 없으면 알림 없이 매매만 합니다.
+
+1. 텔레그램에서 봇(`@boozer_infinox_bot`)을 찾아 `/start`를 보냅니다.
+2. 저장소 폴더에 `telegram.json`을 만듭니다. **이 파일은 git에 올리지 않습니다** (`.gitignore`에 등록됨).
+   ```json
+   {"token": "봇 토큰", "chat_id": null}
+   ```
+3. chat_id를 자동으로 찾아 저장하고, 테스트 메시지를 보냅니다.
+   ```powershell
+   python telegram_notify.py --setup
+   python telegram_notify.py --test
+   ```
+
+파일 대신 환경변수 `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`를 써도 됩니다.
+
+| 알림 | 시점 |
+|---|---|
+| 진입 | 방향, lot, 마틴 단계, 가격, SL/TP, 최대 손실, 잔고, 오늘/이번주/이번달 수익률 |
+| 청산 | 익절/손절, 손익 $와 %, 다음 마틴 단계(또는 정지), 잔고, 오늘/이번주/이번달 수익률 |
+| 일일 리포트 | 월~금 23:58 (서버시간, 금 시장 마감 직후) |
+| 주간 리포트 | 금요일 일일 리포트 다음 |
+| 월간 리포트 | 그 달 마지막 거래일 일일 리포트 다음 |
+| 기타 | 시작/종료, 오류로 멈춤, 5단계 손절 정지, 주문 실패, 증거금 부족, 금요일 청산 실패 |
+
+수익률은 이 전략이 실현한 손익 ÷ 기간 시작 시점 잔고입니다. 열린 포지션의 평가손익은 포함하지 않습니다.
+리포트는 스크립트가 켜져 있을 때 보냅니다. 꺼져 있던 동안 놓친 리포트는 다시 켰을 때 가장 최근 것 하나만 보냅니다.
+
 ## 실행
 
 ```powershell
@@ -76,6 +106,7 @@ Ctrl+C로 종료해도 열린 포지션은 서버에 걸어 둔 SL/TP로 계속 
 
 - `trades.csv`: 거래마다 신호 봉, 마틴 단계, lot, 신호 가격, 체결가, **슬리피지**, 스프레드, SL/TP, 청산가, 손익, 청산 사유(TP/SL/CLOSE)
 - `events.log`: 5분마다 SAR, RSI, H1 SAR 상태와 진입·청산·정지 기록
+- `state.json`: 리포트를 어디까지 보냈는지 기록 (중복 전송 방지)
 
 백테스트에서는 거래당 추가 비용이 0.2달러를 넘으면 우위가 사라졌습니다. 2~4주 운영한 뒤 `trades.csv`의 `slippage` 평균이 0.1달러 이하인지 먼저 확인하세요.
 
@@ -86,6 +117,8 @@ config.py             공통 설정 (종목, MT5 연결)
 indicators.py         지표 계산 (SAR, RSI, ADX, EMA)
 check_connection.py   MT5 연결 / 계좌 확인 (읽기 전용)
 demo_trader.py        데모 관찰용 자동매매
+reports.py            수익률 계산, 일/주/월 리포트
+telegram_notify.py    텔레그램 알림 (설정: telegram.json)
 backtests/            백테스트 모음
 ```
 

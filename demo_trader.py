@@ -25,9 +25,14 @@
 
 기록 (demo_log/ 폴더): trades.csv (거래별 신호/체결/슬리피지/결과), events.log (실행 로그)
 
+텔레그램 (telegram.json 설정이 있을 때, 설정법은 telegram_notify.py 참고):
+- 진입/청산 때마다 거래 내용과 오늘/이번주/이번달 수익률
+- 일일(월~금 23:58 서버시간), 주간(금요일), 월간(마지막 거래일) 리포트
+- 시작/종료, 마틴 정지, 금요일 청산, 주문 실패
+
 사용법:
   python demo_trader.py            # 실행 (Ctrl+C로 종료)
-  python demo_trader.py --dry-run  # 주문 없이 신호만 계산해서 출력
+  python demo_trader.py --dry-run  # 주문 없이 신호만 계산해서 출력 (텔레그램 전송 안 함)
 """
 import argparse
 import csv
@@ -41,6 +46,8 @@ import pandas as pd
 
 from config import SYMBOL, mt5_init
 from indicators import psar, rsi
+from reports import ReportScheduler, ServerClock, summary_line
+from telegram_notify import Notifier
 
 # 전략
 SL_USD = 7.5
@@ -61,10 +68,18 @@ H1_BARS = 400
 
 LOG_DIR = Path(__file__).resolve().parent / "demo_log"
 TRADES_CSV = LOG_DIR / "trades.csv"
+STATE_JSON = LOG_DIR / "state.json"
 FIELDS = ["signal_bar", "side", "level", "lot", "signal_price", "order_time", "fill_price", "slippage", "spread",
           "sl", "tp", "ticket", "close_time", "close_price", "profit", "result"]
 
 log = logging.getLogger("demo")
+tg = None          # Notifier, main()에서 설정
+clock = None       # ServerClock, main()에서 설정
+
+
+def account_line():
+    a = mt5.account_info()
+    return f"잔고 {a.balance:,.2f} | 평가 {a.equity:,.2f} {a.currency}"
 
 
 def setup_logging():
@@ -92,12 +107,6 @@ def check_demo():
         mt5.shutdown()
         raise SystemExit(f"데모 계좌가 아닙니다 ({acc.login}, {acc.server}). 안전을 위해 종료합니다.")
     return acc
-
-
-def server_now():
-    """서버 시각 (MT5 시간은 서버시간을 UTC처럼 표기)"""
-    tick = mt5.symbol_info_tick(SYMBOL)
-    return datetime.fromtimestamp(tick.time, timezone.utc).replace(tzinfo=None) if tick else None
 
 
 def rates(tf, n):
@@ -174,6 +183,7 @@ def place(side, lot, level, signal_bar, signal_price):
     free = mt5.account_info().margin_free
     if margin is None or margin > free * 0.9:
         log.warning(f"증거금 부족으로 진입 안 함: 필요 {margin}, 여유 {free:.2f} ({lot} lot)")
+        tg.send(f"⚠️ 증거금 부족으로 진입 안 함\n필요 {margin} / 여유 {free:,.2f} ({lot} lot)")
         return None
     sl = round(price - SL_USD * side, info.digits)
     tp = round(price + TP_USD * side, info.digits)
@@ -184,7 +194,9 @@ def place(side, lot, level, signal_bar, signal_price):
     }
     res = mt5.order_send(req)
     if res is None or res.retcode != mt5.TRADE_RETCODE_DONE:
-        log.error(f"주문 실패: {res.retcode if res else mt5.last_error()} {res.comment if res else ''}")
+        err = f"{res.retcode if res else mt5.last_error()} {res.comment if res else ''}"
+        log.error(f"주문 실패: {err}")
+        tg.send(f"❗ 주문 실패 ({'매수' if side == 1 else '매도'} {lot} lot): {err}")
         return None
     fill = res.price or price
     spread = tick.ask - tick.bid
@@ -198,6 +210,10 @@ def place(side, lot, level, signal_bar, signal_price):
     }
     log.info(f"진입 {row['side']} {lot}lot (마틴 {level}단계) @ {fill} "
              f"(신호봉 종가 {signal_price}, SL {sl}, TP {tp}, 스프레드 {row['spread']})")
+    tg.send(f"{'🟢 매수' if side == 1 else '🔴 매도'} 진입 {lot} lot (마틴 {level}단계)\n"
+            f"가격 {fill} | SL {sl} | TP {tp}\n"
+            f"최대 손실 약 {SL_USD * lot * 100:,.0f}$ / 목표 이익 약 {TP_USD * lot * 100:,.0f}$\n"
+            f"{account_line()}\n{summary_line(clock.now(), MAGIC, SYMBOL)}")
     return row
 
 
@@ -213,6 +229,8 @@ def close_position(p):
     res = mt5.order_send(req)
     ok = res is not None and res.retcode == mt5.TRADE_RETCODE_DONE
     log.info(f"금요일 청산 {'완료' if ok else '실패'}: 티켓 {p.ticket} {res.retcode if res else mt5.last_error()}")
+    if not ok:
+        tg.send(f"❗ 금요일 청산 실패: 티켓 {p.ticket} {res.retcode if res else mt5.last_error()}")
 
 
 def find_close(ticket):
@@ -225,6 +243,8 @@ def find_close(ticket):
     d = out[-1]
     profit = sum(x.profit + x.commission + x.swap for x in deals)
     reason = {mt5.DEAL_REASON_TP: "TP", mt5.DEAL_REASON_SL: "SL"}.get(d.reason, "CLOSE")
+    if d.comment == "friday close":
+        reason = "FRIDAY"
     return {"close_time": datetime.fromtimestamp(d.time, timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
             "close_price": d.price, "profit": round(profit, 2), "result": reason}
 
@@ -243,18 +263,45 @@ def is_after(now, hhmm):
     return (now.hour, now.minute) >= (h, m)
 
 
+def notify_close(row):
+    profit = float(row["profit"])
+    bal = mt5.account_info().balance
+    pct = profit / (bal - profit) * 100 if bal - profit > 0 else 0.0
+    level, stopped = martin_state(clock.now())
+    icon = {"TP": "✅ 익절", "SL": "❌ 손절", "FRIDAY": "⏹ 금요일 청산"}.get(row["result"], "⏹ 청산")
+    nxt = "오늘 거래 정지 (5단계 손절)" if stopped else f"다음 진입 마틴 {level}단계 ({lot_for(level)} lot)"
+    log.info(f"청산 {row['result']} @ {row['close_price']} 손익 {profit} -> {nxt}")
+    tg.send(f"{icon} {row.get('side', '')} {row.get('lot', '')} lot\n"
+            f"{row.get('fill_price', '')} → {row['close_price']}\n"
+            f"손익 {profit:+,.2f}$ ({pct:+.2f}%)\n{nxt}\n"
+            f"{account_line()}\n{summary_line(clock.now(), MAGIC, SYMBOL)}")
+    if stopped:
+        tg.send("⛔ 5단계(최대 마틴)에서 손절 -> 오늘은 신규 진입을 멈춥니다. 내일 0단계부터 다시 시작합니다.")
+
+
 def main():
+    global tg, clock
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true", help="주문 없이 신호만 계산")
     args = ap.parse_args()
     setup_logging()
     connect()
     acc = check_demo()
+    tg = Notifier()
+    if args.dry_run:
+        tg.enabled = False
+    clock = ServerClock(SYMBOL)
+    clock.update()
+    scheduler = ReportScheduler(STATE_JSON, MAGIC, SYMBOL, tg.send)
     lots = " / ".join(f"{BASE_LOT * MARTIN_MULT ** i:g}" for i in range(MARTIN_MAX_LEVEL + 1))
     log.info(f"시작: 계좌 {acc.login} ({acc.server}, 데모) 잔고 {acc.balance} {acc.currency}, {SYMBOL} "
-             f"SL {SL_USD} TP {TP_USD}, 마틴 {lots} lot{' [DRY-RUN]' if args.dry_run else ''}")
+             f"SL {SL_USD} TP {TP_USD}, 마틴 {lots} lot{' [DRY-RUN]' if args.dry_run else ''}"
+             f", 텔레그램 {'켜짐' if tg.enabled else '꺼짐'}")
+    tg.send(f"▶️ 자동매매 시작 (데모 {acc.login})\n{SYMBOL} SL {SL_USD}$ / TP {TP_USD}$\n마틴 {lots} lot\n"
+            f"{account_line()}\n{summary_line(clock.now(), MAGIC, SYMBOL)}")
     if not args.dry_run and not mt5.terminal_info().trade_allowed:
         log.warning("MT5의 'Algo Trading'이 꺼져 있습니다. 켜야 주문이 들어갑니다.")
+        tg.send("⚠️ MT5의 'Algo Trading'이 꺼져 있습니다. 켜야 주문이 들어갑니다.")
 
     # 이전 실행에서 열어 둔 포지션이 있으면 이어서 기록
     open_row = None
@@ -272,7 +319,8 @@ def main():
                 time.sleep(5)
                 connect()
             check_demo()
-            now = server_now()
+            clock.update()
+            now = clock.now()
 
             # 진입했던 포지션이 닫혔는지 확인
             if open_row and not any(p.ticket == open_row["ticket"] for p in my_positions()):
@@ -280,12 +328,13 @@ def main():
                 if c:
                     open_row.update(c)
                     append_row(open_row)
-                    level, stopped = martin_state(now) if now else (0, False)
-                    log.info(f"청산 {c['result']} @ {c['close_price']} 손익 {c['profit']} -> "
-                             + ("오늘 거래 정지 (5단계 손절)" if stopped else f"다음 진입 마틴 {level}단계 ({lot_for(level)} lot)"))
+                    notify_close(open_row)
                     open_row = None
 
-            friday = now is not None and now.weekday() == 4
+            if not args.dry_run:
+                scheduler.check(now)
+
+            friday = now.weekday() == 4
             # 청산이 실패해도(장 마감 등) 1분에 한 번만 다시 시도
             if friday and is_after(now, FRIDAY_CLOSE) and not args.dry_run and time.time() - last_close_try > 60:
                 for p in my_positions():
@@ -312,7 +361,13 @@ def main():
             time.sleep(POLL_SEC)
     except KeyboardInterrupt:
         log.info("사용자 종료 (열린 포지션은 서버 SL/TP로 계속 관리됨)")
+        tg.send("⏸ 자동매매 종료 (열린 포지션은 서버 SL/TP로 계속 관리됩니다)")
+    except BaseException as e:
+        log.exception("오류로 종료")
+        tg.send(f"❗ 자동매매가 오류로 멈췄습니다: {e}")
+        raise
     finally:
+        tg.flush()
         mt5.shutdown()
 
 
