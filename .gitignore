@@ -1,0 +1,16 @@
+# 틱 데이터 캐시 (수 GB, 실행하면 MT5에서 다시 받음)
+data/
+
+# 실행 기록 / 백테스트 결과
+demo_log/
+results/
+*.csv
+
+# 스크린샷 (계좌 거래내역 등)
+*.png
+*.jpg
+
+# 파이썬
+__pycache__/
+*.pyc
+.venv/

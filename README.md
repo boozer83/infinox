@@ -1,0 +1,112 @@
+# infinox
+
+Infinox MT5 계좌로 금(XAUUSD)을 거래하는 파이썬 자동매매(데모 관찰용)와 백테스트 모음.
+
+> **주의: 이 전략은 장기적으로 수익이 검증되지 않았습니다.**
+> 2022-01 ~ 2026-10 실제 틱 백테스트에서 전체 PF 0.96이었습니다(2022~2024년 손실, 2025~2026년 수익).
+> 마틴을 쓰면 손실이 나는 시기에 더 빨리 깡통이 납니다. `demo_trader.py`는 **데모 계좌에서 관찰하는 용도**로만 만들었고,
+> 실계좌에 로그인된 상태에서는 실행되지 않습니다.
+
+## 준비물
+
+- Windows PC (MetaTrader5 파이썬 패키지는 Windows 전용)
+- Infinox MetaTrader 5 터미널 설치 + **데모 계좌**로 로그인
+- Python 3.10 이상
+
+## 설치
+
+```powershell
+git clone https://github.com/boozer83/infinox.git
+cd infinox
+python -m pip install -r requirements.txt
+```
+
+## MT5 설정
+
+1. MT5를 켜고 **데모 계좌**로 로그인합니다. 서버 이름은 `InfinoxLimited-MT5Demo`처럼 `Demo`가 들어간 서버입니다.
+2. 툴바의 **Algo Trading** 버튼을 눌러 초록색으로 켭니다. 꺼져 있으면 주문이 거부됩니다.
+3. **도구 → 옵션 → 전문가 조언자(Expert Advisors)**에서 "알고리즘 거래 허용"이 켜져 있는지 확인합니다.
+4. Windows 절전 모드를 끕니다. PC가 잠들면 새 진입이 멈춥니다.
+
+MT5 터미널 경로는 자동으로 찾습니다. MT5가 여러 개 설치돼 있거나 연결이 안 되면 경로를 직접 지정하세요.
+
+```powershell
+$env:MT5_TERMINAL_PATH = "C:\Program Files\Infinox MetaTrader 5 Terminal\terminal64.exe"
+```
+
+## 실행
+
+```powershell
+# 1. 연결 확인 (주문 안 함): 계좌 종류가 "데모"로 나오는지 확인
+python check_connection.py
+
+# 2. 신호만 확인 (주문 안 함)
+python demo_trader.py --dry-run
+
+# 3. 자동매매 시작 (Ctrl+C로 종료)
+python demo_trader.py
+```
+
+Ctrl+C로 종료해도 열린 포지션은 서버에 걸어 둔 SL/TP로 계속 관리됩니다. 다시 실행하면 그 포지션과 오늘의 마틴 단계를 이어받습니다.
+
+## 매매 규칙 (`demo_trader.py`)
+
+| 항목 | 내용 |
+|---|---|
+| 종목 / 봉 | XAUUSD 5분봉 |
+| 매수 | 5분봉 SAR(0.02, 0.2)이 상승 전환 + RSI(14) > 50 + 마지막 완성 1시간봉 SAR 상승 |
+| 매도 | 5분봉 SAR이 하락 전환 + RSI(14) < 50 + 마지막 완성 1시간봉 SAR 하락 |
+| 진입 시점 | 신호 봉이 완성되는 즉시 시장가 |
+| 포지션 | 한 번에 1개 (보유 중이면 새 신호 무시) |
+| 손절 / 익절 | 7.5달러 / 3달러, 주문할 때 서버에 설정 |
+| 마틴 | 0.03 → 0.06 → 0.12 → 0.24 → 0.48 → 0.96 lot (손절마다 2배, 익절하면 0.03으로) |
+| 마틴 정지 | 5단계(0.96 lot)에서도 손절이면 그날은 신규 진입 정지 |
+| 마틴 초기화 | 서버 날짜가 바뀌면 0단계(0.03 lot)부터 |
+| 주말 보호 | 금요일 22:30(서버시간) 이후 신규 진입 안 함, 23:30에 보유 포지션 청산 |
+| 안전장치 | 데모 계좌가 아니면 즉시 종료, 매직 넘버 20261017 포지션만 관리, 증거금 부족 시 진입 안 함 |
+
+설정값은 `demo_trader.py` 위쪽 상수(`BASE_LOT`, `MARTIN_MAX_LEVEL`, `SL_USD`, `TP_USD`, `FRIDAY_CLOSE` 등)에서 바꿀 수 있습니다.
+
+**최악의 경우**: 5단계까지 연속 손절하면 하루 손실은 7.5 × (0.03+0.06+0.12+0.24+0.48+0.96) × 100 ≈ **1,418달러**입니다.
+1,000달러 계좌라면 그 전에 계좌가 바닥납니다. 장 마감 사이 갭이 생기면 손실이 SL보다 더 커질 수 있습니다.
+
+## 기록
+
+`demo_log/` 폴더에 남습니다.
+
+- `trades.csv`: 거래마다 신호 봉, 마틴 단계, lot, 신호 가격, 체결가, **슬리피지**, 스프레드, SL/TP, 청산가, 손익, 청산 사유(TP/SL/CLOSE)
+- `events.log`: 5분마다 SAR, RSI, H1 SAR 상태와 진입·청산·정지 기록
+
+백테스트에서는 거래당 추가 비용이 0.2달러를 넘으면 우위가 사라졌습니다. 2~4주 운영한 뒤 `trades.csv`의 `slippage` 평균이 0.1달러 이하인지 먼저 확인하세요.
+
+## 파일 구조
+
+```
+config.py             공통 설정 (종목, MT5 연결)
+indicators.py         지표 계산 (SAR, RSI, ADX, EMA)
+check_connection.py   MT5 연결 / 계좌 확인 (읽기 전용)
+demo_trader.py        데모 관찰용 자동매매
+backtests/            백테스트 모음
+```
+
+## 백테스트
+
+저장소 루트에서 `python -m backtests.<이름>`으로 실행합니다. MT5가 켜져 있어야 하고, 처음 실행할 때는 틱 데이터를 MT5에서 받아 `data/`에 저장합니다. 4년 10개월치는 수 GB이고 시간이 걸립니다. 결과 CSV는 실행한 폴더에 저장됩니다.
+
+| 모듈 | 내용 | 결론 |
+|---|---|---|
+| `sar_basic` | 1분/5분봉 SAR 전환 + 고정 SL/TP (봉 기반, 스프레드 0.30 가정) | 전부 손실 |
+| `hedge_martin` | SAR 양방향 마틴 (EA 거래내역 재구성) | 대부분 깡통 |
+| `straddle` | 매수·매도 동시 진입, 지는 쪽 손절 + 마틴 | 전부 깡통 |
+| `straddle_ticks_check` | `straddle`을 실제 틱으로 검증 | 봉 기반 수익은 착시 |
+| `m5_ticks` | 5분봉 SAR, 실제 틱 체결 (6개월) | PF 0.98~1.01 |
+| `filters` | SAR + 필터 12종 (실제 틱, 6개월) | RSI50 + H1 SAR이 가장 좋음 (PF 1.10~1.14) |
+| `daily_martin` | RSI50 + H1 SAR + 일일 마틴 (6개월) | 수익은 늘지만 낙폭도 커짐 |
+| `robustness` | RSI50 + H1 SAR 설정 변경 23종 | 5분봉 SAR 설정과 비용에 민감 |
+| `long_period` | RSI50 + H1 SAR, 2022-01 ~ 현재, 월별 수익률 | **전체 PF 0.96, 2022~2024 손실** |
+| `regime_filter` | 시장 상태 필터 (2022~23로 기준, 2024~26 검증) | 통하는 필터 없음 |
+
+```powershell
+python -m backtests.long_period     # 장기 백테스트 + 월별 수익률
+python -m backtests.filters         # 필터 비교
+```
