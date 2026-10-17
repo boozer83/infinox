@@ -10,9 +10,9 @@
 마틴 규칙 (backtests/daily_martin.py와 동일):
 - 시작 lot = 그날 시작 잔고 1,000달러당 0.03 lot (0.01 단위 내림, 최소 0.01). 하루 안에서는 같은 시작 lot 유지
 - 손절로 끝나면 다음 진입 수량 x2, 익절이면 시작 lot으로 복귀
-  잔고 1,000달러일 때 단계 0~5: 0.03 / 0.06 / 0.12 / 0.24 / 0.48 / 0.96 (10,000달러면 0.30 ~ 9.60)
-- 5단계(0.96)에서도 손절이면 그날은 신규 진입 정지
-- 서버시간 날짜가 바뀌면 단계 0부터 다시 시작
+  연속 손절 중 최대 5번째 진입까지 (익절하면 1번째로 돌아가 그날 계속 거래). 잔고 1,000달러일 때 1~5번째: 0.03 / 0.06 / 0.12 / 0.24 / 0.48 (10,000달러면 0.30 ~ 4.80)
+- 5번째(0.48)에서도 손절이면 그날은 신규 진입 정지
+- 서버시간 날짜가 바뀌면 1번째부터 다시 시작
 - 단계는 오늘 이 스크립트가 청산한 거래내역(MT5 서버 기록)으로 계산 -> 스크립트를 껐다 켜도 이어짐
 
 주말 보호:
@@ -22,14 +22,24 @@
 횡보 정지:
 - 오늘 완성된 1시간봉 SAR 전환이 MAX_H1_FLIPS(3)번 이상이면 그날 신규 진입 안 함 (backtests/regime_switch.py)
   (주말 갭은 서버 SL로도 막을 수 없어서)
+조용한 시장 쉬기:
+- 신호가 나온 5분봉(완성 봉)의 ATR(14, Wilder)이 MIN_ATR(2.5$) 미만이면 진입 안 함
+  (2022~24년처럼 변동이 작을 때는 이 신호가 손익분기 승률 71.4%를 못 넘었음)
+최대 lot 제한:
+- 마틴 lot은 그날 시작 lot의 MAX_LOT_MULT(5)배까지만. 1,000달러면 0.03 / 0.06 / 0.12 / 0.15 / 0.15
+성적 기반 쉬기:
+- 최근 WINRATE_N(200)개 결과의 승률이 WINRATE_MIN(71.4%) 미만이면 실제 진입 대신 가상 진입만 함.
+  가상 진입도 같은 SL/TP로 결과를 기록해서, 승률이 회복되면 자동으로 실제 진입을 다시 시작
+  기록: <로그 폴더>/winrate.json (처음에는 백테스트 마지막 200건으로 채워 둠)
 
 안전장치:
 - 기본은 데모 계좌 전용. 실계좌는 --live 옵션을 줄 때만 실행. 실행 중 로그인 계좌가 바뀌면 즉시 멈춤
 - 이 스크립트의 매직 넘버가 붙은 포지션만 확인/관리
 - 증거금이 부족하면 진입하지 않음
 - 최대 lot: 진입할 lot이 MAX_LOT을 넘으면 그날 신규 진입 정지 (설정 실수/버그 방지)
-- 하루 손실 한도: 오늘 이 전략의 청산 손익이 그날 시작 잔고의 DAILY_LOSS_PCT(15%) 이상 손실이면 그날 신규 진입 정지
-- 계좌 손실 한도: 평가금이 기록된 최고 잔고보다 ACCOUNT_STOP_PCT(30%) 이상 줄면 신규 진입 중단.
+- 하루 손실 한도: 오늘 이 전략의 청산 손익이 그날 시작 잔고의 DAILY_LOSS_PCT 이상 손실이면 그날 신규 진입 정지.
+  지금은 꺼 둠(None) -> 마틴이 이길 때까지 5번째 진입까지 감
+- 계좌 손실 한도: 평가금이 기록된 최고 잔고보다 ACCOUNT_STOP_PCT(50%) 이상 줄면 신규 진입 중단.
   demo_log/risk_state.json에 "halted"로 남아서 재시작해도 유지됨. 확인 후 그 파일을 지우면 다시 시작
 
 기록 (demo_log/ 폴더): trades.csv (거래별 신호/체결/슬리피지/결과), events.log (실행 로그)
@@ -56,7 +66,7 @@ import MetaTrader5 as mt5
 import pandas as pd
 
 from config import SYMBOL, mt5_init
-from indicators import psar, rsi
+from indicators import atr, psar, rsi
 from reports import ReportScheduler, ServerClock, summary_line
 from telegram_notify import Notifier
 
@@ -66,7 +76,7 @@ TP_USD = 3.0
 # 마틴
 LOT_PER_1000 = 0.03       # 그날 시작 잔고 1,000달러당 시작 lot
 MARTIN_MULT = 2
-MARTIN_MAX_LEVEL = 5
+MARTIN_MAX_LEVEL = 4       # 0부터 셈: 첫 진입(0) + 2배 4번 = 연속 손절 시 최대 5번째 진입까지
 # 주말 보호 (서버시간, 금요일)
 FRIDAY_NO_ENTRY = "22:30"
 # 미국장 제외 (서버시간, 매일): 이 시간에는 신규 진입 안 함. 보유 포지션은 서버 SL/TP로 계속 관리
@@ -75,11 +85,18 @@ NO_ENTRY_FROM = "15:00"
 NO_ENTRY_UNTIL = "21:00"
 # 횡보 정지: 오늘(서버 날짜) 완성된 1시간봉의 SAR 전환이 이 횟수 이상이면 그날 신규 진입 안 함
 MAX_H1_FLIPS = 3
+# 조용한 시장 쉬기: 신호 봉의 5분봉 ATR(14)이 이 값(달러) 미만이면 진입 안 함
+MIN_ATR = 2.5
+# 마틴 lot 상한: 그날 시작 lot의 몇 배까지
+MAX_LOT_MULT = 5
+# 성적 기반 쉬기: 최근 N개 결과(실제 + 가상) 승률이 이 값(%) 미만이면 가상 진입만
+WINRATE_N = 200
+WINRATE_MIN = 71.4
 FRIDAY_CLOSE = "23:30"
 # 실계좌 안전장치
 MAX_LOT = 1.0             # 한 번에 진입할 최대 lot
-DAILY_LOSS_PCT = 15.0     # 하루 손실 한도 (그날 시작 잔고 대비 %). 10% 이하는 마틴 회복을 끊어서 2025~26 백테스트에서 오히려 나빴음
-ACCOUNT_STOP_PCT = 30.0   # 계좌 손실 한도 (최고 잔고 대비 평가금 감소 %)
+DAILY_LOSS_PCT = None     # 하루 손실 한도 (그날 시작 잔고 대비 %), None = 끔. 15%는 4연속 손절 날 마틴 회복을 끊었음
+ACCOUNT_STOP_PCT = 50.0   # 계좌 손실 한도 (최고 잔고 대비 평가금 감소 %). 30%는 2025-08 낙폭(34%)에 걸려 멈췄음
 # 주문
 MAGIC = 20261017
 DEVIATION = 30            # 허용 슬리피지 (포인트, 0.30달러)
@@ -91,6 +108,7 @@ LOG_DIR = Path(__file__).resolve().parent / "demo_log"
 TRADES_CSV = LOG_DIR / "trades.csv"
 STATE_JSON = LOG_DIR / "state.json"
 RISK_JSON = LOG_DIR / "risk_state.json"
+WINRATE_JSON = LOG_DIR / "winrate.json"
 FIELDS = ["signal_bar", "side", "level", "lot", "signal_price", "order_time", "fill_price", "slippage", "spread",
           "sl", "tp", "ticket", "close_time", "close_price", "profit", "result"]
 
@@ -100,7 +118,8 @@ clock = None       # ServerClock, main()에서 설정
 
 
 STRATEGY = "마틴"
-STRATEGY_DESC = "5분봉 SAR 전환 + RSI50 + 1시간봉 SAR, 익절 3$ / 손절 7.5$, 일일 마틴 5단계"
+STRATEGY_DESC = ("5분봉 SAR 전환 + RSI50 + 1시간봉 SAR, 익절 3$ / 손절 7.5$, 일일 마틴 최대 5번째 진입 "
+                 "(lot 상한 시작 lot의 5배), 5분봉 ATR 2.5$ 미만 쉼, 최근 200건 승률 71.4% 미만 쉼")
 
 
 def send(text):
@@ -177,7 +196,7 @@ def risk_block(now, lot):
     start_bal = acc.balance - sum(d.profit + d.commission + d.swap for d in trade_deals)
     mine = sum(d.profit + d.commission + d.swap for d in trade_deals
                if d.magic == MAGIC and d.entry == mt5.DEAL_ENTRY_OUT)
-    if start_bal > 0 and mine <= -DAILY_LOSS_PCT / 100 * start_bal:
+    if DAILY_LOSS_PCT is not None and start_bal > 0 and mine <= -DAILY_LOSS_PCT / 100 * start_bal:
         return f"하루 손실 한도 도달 (오늘 {mine:+,.2f} / 시작 잔고 {start_bal:,.2f}의 {DAILY_LOSS_PCT:g}%)"
     if lot > MAX_LOT:
         return f"진입 lot {lot}이 최대 lot {MAX_LOT}을 넘음"
@@ -251,9 +270,76 @@ def martin_state(now):
 
 def lot_for(level, base):
     info = mt5.symbol_info(SYMBOL)
-    lot = base * MARTIN_MULT ** level
+    lot = min(base * MARTIN_MULT ** level, base * MAX_LOT_MULT)
     lot = round(round(lot / info.volume_step) * info.volume_step, 2)
     return min(max(lot, info.volume_min), info.volume_max)
+
+
+def load_wr():
+    try:
+        wr = json.loads(WINRATE_JSON.read_text(encoding="utf-8"))
+    except (FileNotFoundError, ValueError):
+        wr = {}
+    wr.setdefault("results", [])
+    wr.setdefault("virtual", None)
+    wr.setdefault("paused", False)
+    return wr
+
+
+def save_wr(wr):
+    WINRATE_JSON.write_text(json.dumps(wr, ensure_ascii=False, indent=1), encoding="utf-8")
+
+
+def winrate(wr):
+    """최근 WINRATE_N개 승률(%)과 개수"""
+    last = wr["results"][-WINRATE_N:]
+    return (sum(last) / len(last) * 100 if last else 0.0), len(last)
+
+
+def is_paused(wr):
+    rate, n = winrate(wr)
+    return n >= WINRATE_N and rate < WINRATE_MIN
+
+
+def record_result(wr, win, how):
+    """결과 한 건 추가. 쉬기 시작/끝이 바뀌면 텔레그램으로 알림"""
+    wr["results"] = (wr["results"] + [bool(win)])[-WINRATE_N:]
+    rate, n = winrate(wr)
+    paused = is_paused(wr)
+    log.info(f"승률 기록 ({how} {'익절' if win else '손절'}): 최근 {n}건 {rate:.1f}%")
+    if paused != wr["paused"]:
+        wr["paused"] = paused
+        if paused:
+            send(f"⏸ 최근 {n}건 승률 {rate:.1f}% < {WINRATE_MIN}% -> 실제 진입을 쉬고 가상 진입만 기록합니다.\n"
+                 f"승률이 {WINRATE_MIN}% 이상으로 돌아오면 자동으로 다시 시작합니다.")
+        else:
+            send(f"▶️ 최근 {n}건 승률 {rate:.1f}% -> 실제 진입을 다시 시작합니다.")
+    save_wr(wr)
+
+
+def check_virtual(wr):
+    """가상 포지션이 익절/손절 가격에 닿았는지 확인 (매수는 Bid, 매도는 Ask 기준 = 실제 SL/TP와 같은 방식)"""
+    v = wr["virtual"]
+    if not v:
+        return
+    tick = mt5.symbol_info_tick(SYMBOL)
+    if tick is None:
+        return
+    px = tick.bid if v["side"] == 1 else tick.ask
+    move = (px - v["entry"]) * v["side"]
+    if move >= TP_USD or move <= -SL_USD:
+        wr["virtual"] = None
+        log.info(f"가상 {'매수' if v['side'] == 1 else '매도'} @ {v['entry']} 종료 @ {px}")
+        record_result(wr, move > 0, "가상")
+
+
+def open_virtual(wr, side, bar):
+    tick = mt5.symbol_info_tick(SYMBOL)
+    entry = tick.ask if side == 1 else tick.bid
+    wr["virtual"] = {"side": side, "entry": entry, "signal_bar": bar}
+    save_wr(wr)
+    rate, n = winrate(wr)
+    log.info(f"승률 쉬기 중 (최근 {n}건 {rate:.1f}%) -> 가상 {'매수' if side == 1 else '매도'} @ {entry}")
 
 
 def my_positions():
@@ -303,9 +389,9 @@ def place(side, lot, level, signal_bar, signal_price):
         "fill_price": fill, "slippage": round((bid_equiv - signal_price) * side, 3),
         "spread": round(spread, 3), "sl": sl, "tp": tp, "ticket": res.order,
     }
-    log.info(f"진입 {row['side']} {lot}lot (마틴 {level}단계) @ {fill} "
+    log.info(f"진입 {row['side']} {lot}lot (마틴 {level + 1}번째) @ {fill} "
              f"(신호봉 종가 {signal_price}, SL {sl}, TP {tp}, 스프레드 {row['spread']})")
-    send(f"{'🟢 매수' if side == 1 else '🔴 매도'} 진입 {lot} lot (마틴 {level}단계)\n"
+    send(f"{'🟢 매수' if side == 1 else '🔴 매도'} 진입 {lot} lot (마틴 {level + 1}번째)\n"
             f"전략: {STRATEGY_DESC}\n"
             f"가격 {fill} | SL {sl} | TP {tp}\n"
             f"최대 손실 약 {SL_USD * lot * 100:,.0f}$ / 목표 이익 약 {TP_USD * lot * 100:,.0f}$\n"
@@ -365,21 +451,22 @@ def notify_close(row):
     pct = profit / (bal - profit) * 100 if bal - profit > 0 else 0.0
     level, stopped, base = martin_state(clock.now())
     icon = {"TP": "✅ 익절", "SL": "❌ 손절", "FRIDAY": "⏹ 금요일 청산"}.get(row["result"], "⏹ 청산")
-    nxt = "오늘 거래 정지 (5단계 손절)" if stopped else f"다음 진입 마틴 {level}단계 ({lot_for(level, base)} lot)"
+    nxt = "오늘 거래 정지 (5번째 진입 손절)" if stopped else f"다음 진입 마틴 {level + 1}번째 ({lot_for(level, base)} lot)"
     log.info(f"청산 {row['result']} @ {row['close_price']} 손익 {profit} -> {nxt}")
     send(f"{icon} {row.get('side', '')} {row.get('lot', '')} lot\n"
             f"{row.get('fill_price', '')} → {row['close_price']}\n"
             f"손익 {profit:+,.2f}$ ({pct:+.2f}%)\n{nxt}\n"
             f"{account_line()}\n{summary_line(clock.now(), MAGIC, SYMBOL)}")
     if stopped:
-        send("⛔ 5단계(최대 마틴)에서 손절 -> 오늘은 신규 진입을 멈춥니다. 내일 0단계부터 다시 시작합니다.")
+        send("⛔ 5번째 진입(최대 마틴)에서 손절 -> 오늘은 신규 진입을 멈춥니다. 내일 1번째부터 다시 시작합니다.")
 
 
 def use_live_paths():
     """실계좌 실행은 기록을 live_log/에 따로 남기고, 텔레그램에 실계좌로 표시"""
-    global LOG_DIR, TRADES_CSV, STATE_JSON, RISK_JSON, STRATEGY
+    global LOG_DIR, TRADES_CSV, STATE_JSON, RISK_JSON, WINRATE_JSON, STRATEGY
     LOG_DIR = LOG_DIR.parent / "live_log"
     TRADES_CSV, STATE_JSON, RISK_JSON = LOG_DIR / "trades.csv", LOG_DIR / "state.json", LOG_DIR / "risk_state.json"
+    WINRATE_JSON = LOG_DIR / "winrate.json"
     STRATEGY = "마틴·실계좌"
 
 
@@ -404,7 +491,12 @@ def main():
     base = base_lot(clock.now())
     lots = " / ".join(f"{lot_for(i, base):g}" for i in range(MARTIN_MAX_LEVEL + 1))
     lots += f" lot (오늘 시작 잔고 기준, 1,000$당 {LOT_PER_1000} lot)"
-    limits = f"최대 lot {MAX_LOT}, 하루 손실 한도 {DAILY_LOSS_PCT:g}%, 계좌 손실 한도 {ACCOUNT_STOP_PCT:g}%"
+    daily = "꺼짐" if DAILY_LOSS_PCT is None else f"{DAILY_LOSS_PCT:g}%"
+    wr = load_wr()
+    rate, n = winrate(wr)
+    limits = (f"최대 lot {MAX_LOT} (마틴은 시작 lot의 {MAX_LOT_MULT}배까지), 하루 손실 한도 {daily}, "
+              f"계좌 손실 한도 {ACCOUNT_STOP_PCT:g}%, ATR {MIN_ATR:g}$ 미만 쉼, "
+              f"최근 {WINRATE_N}건 승률 {WINRATE_MIN:g}% 미만 쉼 (지금 {n}건 {rate:.1f}%{', 쉬는 중' if is_paused(wr) else ''})")
     log.info(f"시작: 계좌 {acc.login} ({acc.server}, {kind}) 잔고 {acc.balance} {acc.currency}, {SYMBOL} "
              f"SL {SL_USD} TP {TP_USD}, 마틴 {lots}, {limits}{' [DRY-RUN]' if args.dry_run else ''}"
              f", 텔레그램 {'켜짐' if tg.enabled else '꺼짐'}")
@@ -444,7 +536,9 @@ def main():
                     open_row.update(c)
                     append_row(open_row)
                     notify_close(open_row)
+                    record_result(wr, float(open_row["profit"]) > 0, "실제")
                     open_row = None
+            check_virtual(wr)
 
             if not args.dry_run:
                 scheduler.check(now)
@@ -467,19 +561,25 @@ def main():
                     level, stopped, base = martin_state(now)
                     if my_positions():
                         log.info("포지션 보유 중이라 신호 무시")
+                    elif wr["virtual"]:
+                        log.info("가상 포지션 진행 중이라 신호 무시")
                     elif stopped:
-                        log.info("오늘은 5단계 손절로 거래 정지 상태라 신호 무시")
+                        log.info("오늘은 5번째 진입 손절로 거래 정지 상태라 신호 무시")
                     elif friday and is_after(now, FRIDAY_NO_ENTRY):
                         log.info("금요일 마감 전이라 신규 진입 안 함")
                     elif is_after(now, NO_ENTRY_FROM) and not is_after(now, NO_ENTRY_UNTIL):
                         log.info(f"미국장 제외 시간({NO_ENTRY_FROM}~{NO_ENTRY_UNTIL})이라 신규 진입 안 함")
                     elif (flips := h1_flips_today(h1, now)) >= MAX_H1_FLIPS:
                         log.info(f"오늘 1시간봉 SAR 전환 {flips}번 (횡보)이라 신규 진입 안 함")
+                    elif (a := float(atr(m5).iat[-1])) < MIN_ATR:
+                        log.info(f"5분봉 ATR {a:.2f}$ < {MIN_ATR}$ (조용한 시장)이라 신규 진입 안 함")
                     elif reason := risk_block(now, lot_for(level, base)):
                         log.info(f"안전장치: {reason} -> 신규 진입 안 함")
                         if risk_notified != now.date():
                             risk_notified = now.date()
                             send(f"⛔ 안전장치: {reason}\n오늘은 신규 진입을 멈춥니다.")
+                    elif is_paused(wr):
+                        open_virtual(wr, side, bar.strftime("%Y-%m-%d %H:%M"))
                     else:
                         open_row = place(side, lot_for(level, base), level, bar.strftime("%Y-%m-%d %H:%M"), close)
             time.sleep(POLL_SEC)
