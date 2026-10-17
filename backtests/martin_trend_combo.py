@@ -41,11 +41,18 @@ def swap_nights(o, c):
     return int(sum(3 if d.weekday() == TRIPLE_WEEKDAY else (1 if d.weekday() < 5 else 0) for d in days))
 
 
-def trend_trades(m1):
-    """추세추종 거래: (진입, 청산, 방향, 손익 $/oz, 손절폭 $/oz)"""
+def trend_trades(m1, flat=None):
+    """추세추종 거래: (진입, 청산, 방향, 손익 $/oz, 손절폭 $/oz, 스왑 밤 수, 재진입 횟수)
+
+    flat=(청산 시각 분, 재진입 대기 분, 재진입당 추가 비용 $/oz)이면 스왑을 피하려고 매일 그 시각에 청산하고,
+    다음 날 장이 열린 뒤 대기 분이 지나면 같은 방향/같은 손절 가격으로 다시 진입 (lot은 처음과 같음).
+    그사이 청산 신호가 났거나 재진입 가격이 이미 손절선을 넘었으면 다시 들어가지 않음."""
     h4 = resample(m1, 240)
     mk = Market("XAUUSD", m1)
     t, o, h, l, sp = mk.t, mk.o, mk.h, mk.l, mk.sp
+    if flat:
+        tt = pd.Series(t)
+        cut = ((tt.dt.hour * 60 + tt.dt.minute) >= flat[0]).values
     rows, busy = [], np.datetime64("1970-01-01")
     for s in trend(h4, TREND_N, TREND_SL_ATR):
         te, tx = np.datetime64(int(s["entry"]), "ms"), np.datetime64(int(s["exit"]), "ms")
@@ -57,18 +64,40 @@ def trend_trades(m1):
         side = s["side"]
         e = o[k] + (sp[k] if side == 1 else 0.0)
         sl = e - side * s["sl_dist"]
-        hit = (l[k:x] <= sl) if side == 1 else (h[k:x] + sp[k:x] >= sl)
-        idx = np.flatnonzero(hit)
-        if idx.size:
-            j = k + idx[0]
-            op = o[j] + (0.0 if side == 1 else sp[j])
-            px = min(sl, op) if side == 1 else max(sl, op)     # 갭이면 시가
-        else:
-            j = x
-            px = o[j] + (0.0 if side == 1 else sp[j])
-        rows.append((t[k], t[j], side, (px - e) * side, s["sl_dist"]))
+        k0, pnl, rolls = k, 0.0, 0
+        while True:
+            end = x
+            if flat:
+                c = np.flatnonzero(cut[k + 1:x])        # 진입 봉 다음부터 청산 시각 봉
+                end = k + 1 + c[0] if c.size else x
+            hit = (l[k:end] <= sl) if side == 1 else (h[k:end] + sp[k:end] >= sl)
+            idx = np.flatnonzero(hit)
+            if idx.size:
+                j = k + idx[0]
+                op = o[j] + (0.0 if side == 1 else sp[j])
+                pnl += ((min(sl, op) if side == 1 else max(sl, op)) - e) * side     # 갭이면 시가
+                break
+            j = end
+            pnl += (o[j] + (0.0 if side == 1 else sp[j]) - e) * side
+            if j == x:
+                break
+            # 자정 청산 -> 다음 날 첫 봉 + 대기 분에 재진입
+            nxt = (pd.Timestamp(t[j]).normalize() + pd.Timedelta(days=1)).to_datetime64()
+            r0 = int(np.searchsorted(t, nxt))
+            if r0 >= x:
+                break
+            r = int(np.searchsorted(t, t[r0] + np.timedelta64(flat[1], "m")))
+            if r >= x:
+                break
+            e = o[r] + (sp[r] if side == 1 else 0.0)
+            if (e - sl) * side <= 0:                   # 이미 손절선 너머
+                break
+            pnl -= flat[2]
+            k, rolls = r, rolls + 1
+        nights = 0 if flat else swap_nights(t[k0], t[j])
+        rows.append((t[k0], t[j], side, pnl, s["sl_dist"], nights, rolls))
         busy = t[j]
-    return pd.DataFrame(rows, columns=["open", "close", "side", "pnl_oz", "risk"])
+    return pd.DataFrame(rows, columns=["open", "close", "side", "pnl_oz", "risk", "nights", "rolls"])
 
 
 def run(martin, trends, start, use_martin, use_trend):
@@ -102,7 +131,8 @@ def run(martin, trends, start, use_martin, use_trend):
             else:
                 lot = min(TREND_MAX_LOT, floor_lot(bal * TREND_RISK / (r.risk * CONTRACT)))
                 pnl = r.pnl_oz * lot * CONTRACT
-            pnl += swap_nights(r.open, r.close) * (SWAP_LONG if r.side == 1 else SWAP_SHORT) * lot
+            nights = r.nights if kind == "t" else swap_nights(r.open, r.close)
+            pnl += nights * (SWAP_LONG if r.side == 1 else SWAP_SHORT) * lot
             heapq.heappush(heap, (np.datetime64(r.close), -1, seq, kind, (lot, pnl, r)))
             seq += 1
         else:               # 청산
@@ -135,6 +165,32 @@ def report(name, d, start):
             "최저잔고$": f"{eq.min():,.0f}"}
 
 
+FLAT_CUT = 23 * 60 + 50     # 자정 전 청산 시각 (서버시간)
+FLAT_VARIANTS = [(0, 0.0), (15, 0.0), (30, 0.0), (60, 0.0), (0, 0.5), (0, 1.0)]   # (재진입 대기 분, 재진입당 추가 비용)
+
+
+def compare_flat(m1, martin, hold):
+    """추세추종: 자정 넘겨 보유(스왑) vs 매일 23:50 청산 후 다음 날 재진입 (스왑 없음)"""
+    pf = lambda x: round(x[x > 0].sum() / -x[x < 0].sum(), 2)
+    st = STARTS[0]
+    rows = []
+    for name, tr in [("보유 (스왑 냄)", hold)] + [
+            (f"23:50 청산, 대기 {d}분" + (f", 재진입 비용 +{c}$" if c else ""), trend_trades(m1, (FLAT_CUT, d, c)))
+            for d, c in FLAT_VARIANTS]:
+        net = tr.pnl_oz + tr.nights * np.where(tr.side == 1, SWAP_LONG, SWAP_SHORT) / CONTRACT
+        y = pd.to_datetime(tr.close).dt.year
+        row = {"방식": name, "거래": len(tr), "재진입": int(tr.rolls.sum()),
+               **{str(k): pf(net[y == k]) for k in sorted(y.unique())}, "전체PF": pf(net)}
+        for label, um in (("추세만", False), ("둘 다", True)):
+            d = run(martin, tr, st, um, True)
+            eq = np.r_[BAL0, d.bal.values]
+            row[f"{label} 최종$"] = f"{d.bal.iat[-1]:,.0f}"
+            row[f"{label} 낙폭%"] = round(((np.maximum.accumulate(eq) - eq) / np.maximum.accumulate(eq)).max() * 100, 1)
+        rows.append(row)
+    print(f"===== 추세추종 스왑 피하기: 연도별 PF (스왑 포함), {st:%Y-%m}부터 {BAL0:,.0f}$ 계좌 =====")
+    print(pd.DataFrame(rows).to_string(index=False))
+
+
 def main():
     pd.set_option("display.width", 250)
     pd.set_option("display.unicode.east_asian_width", True)
@@ -142,7 +198,8 @@ def main():
     gold_tr = run_gold()[0]
     martin = gold_tr[~gold_tr.virtual].reset_index(drop=True)
     print("추세추종 시뮬레이션...", flush=True)
-    trends = trend_trades(load_m1("XAUUSD"))
+    m1 = load_m1("XAUUSD")
+    trends = trend_trades(m1)
     tw = trends.pnl_oz > 0
     print(f"마틴 실제 거래 {len(martin):,}건, 추세추종 {len(trends):,}건 (승률 {tw.mean() * 100:.0f}%, "
           f"평균 보유 {(trends.close - trends.open).mean() / pd.Timedelta(days=1):.1f}일, "
@@ -159,6 +216,7 @@ def main():
         print(pd.DataFrame(res).fillna("").to_string(index=False))
         print(f"(둘 다) 월 손익 상관계수 마틴 vs 추세추종: {corr:.2f}, "
               f"마틴 손실 월 중 추세추종이 수익인 달: {((m['m'] < 0) & (m['t'] > 0)).sum()}/{(m['m'] < 0).sum()}\n")
+    compare_flat(m1, martin, trends)
 
 
 if __name__ == "__main__":
