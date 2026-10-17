@@ -122,10 +122,10 @@ def setup_logging():
     log.setLevel(logging.INFO)
 
 
-def connect():
+def connect(allow_live=False):
     if not mt5_init():
         raise SystemExit(f"MT5 연결 실패: {mt5.last_error()} (MT5를 켜고 로그인했는지, 경로 설정은 README 참고)")
-    check_demo()
+    check_demo(allow_live)
     if not mt5.symbol_select(SYMBOL, True):
         raise SystemExit(f"{SYMBOL} 종목을 찾을 수 없습니다")
 
@@ -169,7 +169,7 @@ def risk_block(now, lot):
         risk["halted"] = f"{now:%Y-%m-%d %H:%M} 평가금 {acc.equity:,.2f} / 최고 잔고 {peak:,.2f}"
         RISK_JSON.write_text(json.dumps(risk, ensure_ascii=False, indent=2), encoding="utf-8")
         send(f"🛑 계좌 손실 한도({ACCOUNT_STOP_PCT:g}%) 도달 -> 신규 진입을 중단합니다.\n{risk['halted']}\n"
-             f"확인 후 demo_log/{RISK_JSON.name}을 지우고 다시 실행하세요.")
+             f"확인 후 {LOG_DIR.name}/{RISK_JSON.name}을 지우고 다시 실행하세요.")
         return f"계좌 손실 한도 도달 ({risk['halted']})"
     day_start = int(datetime(now.year, now.month, now.day, tzinfo=timezone.utc).timestamp())
     deals = mt5.history_deals_get(day_start, day_start + 2 * 86400) or ()
@@ -375,14 +375,24 @@ def notify_close(row):
         send("⛔ 5단계(최대 마틴)에서 손절 -> 오늘은 신규 진입을 멈춥니다. 내일 0단계부터 다시 시작합니다.")
 
 
+def use_live_paths():
+    """실계좌 실행은 기록을 live_log/에 따로 남기고, 텔레그램에 실계좌로 표시"""
+    global LOG_DIR, TRADES_CSV, STATE_JSON, RISK_JSON, STRATEGY
+    LOG_DIR = LOG_DIR.parent / "live_log"
+    TRADES_CSV, STATE_JSON, RISK_JSON = LOG_DIR / "trades.csv", LOG_DIR / "state.json", LOG_DIR / "risk_state.json"
+    STRATEGY = "마틴·실계좌"
+
+
 def main():
     global tg, clock
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true", help="주문 없이 신호만 계산")
     ap.add_argument("--live", action="store_true", help="실계좌에서도 실행 (기본은 데모 전용)")
     args = ap.parse_args()
+    if args.live:
+        use_live_paths()
     setup_logging()
-    connect()
+    connect(args.live)
     acc = check_demo(args.live)
     kind = account_kind(acc)
     tg = Notifier()
@@ -402,7 +412,7 @@ def main():
             f"{account_line()}\n{summary_line(clock.now(), MAGIC, SYMBOL)}")
     if load_risk().get("halted"):
         send(f"🛑 계좌 손실 한도로 중단된 상태입니다: {load_risk()['halted']}\n"
-             f"확인 후 demo_log/{RISK_JSON.name}을 지우면 다시 진입합니다.")
+             f"확인 후 {LOG_DIR.name}/{RISK_JSON.name}을 지우면 다시 진입합니다.")
     if not args.dry_run and not mt5.terminal_info().trade_allowed:
         log.warning("MT5의 'Algo Trading'이 꺼져 있습니다. 켜야 주문이 들어갑니다.")
         send("⚠️ MT5의 'Algo Trading'이 꺼져 있습니다. 켜야 주문이 들어갑니다.")
@@ -422,7 +432,7 @@ def main():
                 log.warning("터미널 연결 끊김, 재연결 시도")
                 mt5.shutdown()
                 time.sleep(5)
-                connect()
+                connect(args.live)
             check_demo(args.live, acc.login)
             clock.update()
             now = clock.now()

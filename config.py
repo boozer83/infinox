@@ -9,10 +9,11 @@ import os
 import MetaTrader5 as mt5
 
 TERMINAL_PATH = os.environ.get("MT5_TERMINAL_PATH") or None
-SYMBOL = "XAUUSD"
+PORTABLE = os.environ.get("MT5_PORTABLE") == "1"
+SYMBOL = os.environ.get("MT5_SYMBOL") or "XAUUSD"
 CONTRACT = 100          # 금 1 lot = 100온스
 
 
 def mt5_init():
     """MT5 터미널 연결. 성공하면 True"""
-    return mt5.initialize(path=TERMINAL_PATH) if TERMINAL_PATH else mt5.initialize()
+    return mt5.initialize(path=TERMINAL_PATH, portable=PORTABLE) if TERMINAL_PATH else mt5.initialize()
