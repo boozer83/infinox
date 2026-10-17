@@ -42,6 +42,13 @@ def rsi(close, n=14):
     return 100 - 100 / (1 + g / l)
 
 
+def atr(df, n=14):
+    """ATR (Wilder 방식)"""
+    tr = pd.concat([df.high - df.low, (df.high - df.close.shift()).abs(),
+                    (df.low - df.close.shift()).abs()], axis=1).max(axis=1)
+    return tr.ewm(alpha=1/n, adjust=False).mean()
+
+
 def adx(df, n=14):
     h, l, c = df.high, df.low, df.close
     up, dn = h.diff(), -l.diff()

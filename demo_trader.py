@@ -77,6 +77,15 @@ tg = None          # Notifier, main()에서 설정
 clock = None       # ServerClock, main()에서 설정
 
 
+STRATEGY = "마틴"
+STRATEGY_DESC = "5분봉 SAR 전환 + RSI50 + 1시간봉 SAR, 익절 3$ / 손절 7.5$, 일일 마틴 5단계"
+
+
+def send(text):
+    """텔레그램 전송 (앞에 전략 이름 표시)"""
+    tg.send(f"[{STRATEGY}] {text}")
+
+
 def account_line():
     a = mt5.account_info()
     return f"잔고 {a.balance:,.2f} | 평가 {a.equity:,.2f} {a.currency}"
@@ -183,7 +192,7 @@ def place(side, lot, level, signal_bar, signal_price):
     free = mt5.account_info().margin_free
     if margin is None or margin > free * 0.9:
         log.warning(f"증거금 부족으로 진입 안 함: 필요 {margin}, 여유 {free:.2f} ({lot} lot)")
-        tg.send(f"⚠️ 증거금 부족으로 진입 안 함\n필요 {margin} / 여유 {free:,.2f} ({lot} lot)")
+        send(f"⚠️ 증거금 부족으로 진입 안 함\n필요 {margin} / 여유 {free:,.2f} ({lot} lot)")
         return None
     sl = round(price - SL_USD * side, info.digits)
     tp = round(price + TP_USD * side, info.digits)
@@ -196,7 +205,7 @@ def place(side, lot, level, signal_bar, signal_price):
     if res is None or res.retcode != mt5.TRADE_RETCODE_DONE:
         err = f"{res.retcode if res else mt5.last_error()} {res.comment if res else ''}"
         log.error(f"주문 실패: {err}")
-        tg.send(f"❗ 주문 실패 ({'매수' if side == 1 else '매도'} {lot} lot): {err}")
+        send(f"❗ 주문 실패 ({'매수' if side == 1 else '매도'} {lot} lot): {err}")
         return None
     fill = res.price or price
     spread = tick.ask - tick.bid
@@ -210,7 +219,8 @@ def place(side, lot, level, signal_bar, signal_price):
     }
     log.info(f"진입 {row['side']} {lot}lot (마틴 {level}단계) @ {fill} "
              f"(신호봉 종가 {signal_price}, SL {sl}, TP {tp}, 스프레드 {row['spread']})")
-    tg.send(f"{'🟢 매수' if side == 1 else '🔴 매도'} 진입 {lot} lot (마틴 {level}단계)\n"
+    send(f"{'🟢 매수' if side == 1 else '🔴 매도'} 진입 {lot} lot (마틴 {level}단계)\n"
+            f"전략: {STRATEGY_DESC}\n"
             f"가격 {fill} | SL {sl} | TP {tp}\n"
             f"최대 손실 약 {SL_USD * lot * 100:,.0f}$ / 목표 이익 약 {TP_USD * lot * 100:,.0f}$\n"
             f"{account_line()}\n{summary_line(clock.now(), MAGIC, SYMBOL)}")
@@ -230,7 +240,7 @@ def close_position(p):
     ok = res is not None and res.retcode == mt5.TRADE_RETCODE_DONE
     log.info(f"금요일 청산 {'완료' if ok else '실패'}: 티켓 {p.ticket} {res.retcode if res else mt5.last_error()}")
     if not ok:
-        tg.send(f"❗ 금요일 청산 실패: 티켓 {p.ticket} {res.retcode if res else mt5.last_error()}")
+        send(f"❗ 금요일 청산 실패: 티켓 {p.ticket} {res.retcode if res else mt5.last_error()}")
 
 
 def find_close(ticket):
@@ -271,12 +281,12 @@ def notify_close(row):
     icon = {"TP": "✅ 익절", "SL": "❌ 손절", "FRIDAY": "⏹ 금요일 청산"}.get(row["result"], "⏹ 청산")
     nxt = "오늘 거래 정지 (5단계 손절)" if stopped else f"다음 진입 마틴 {level}단계 ({lot_for(level)} lot)"
     log.info(f"청산 {row['result']} @ {row['close_price']} 손익 {profit} -> {nxt}")
-    tg.send(f"{icon} {row.get('side', '')} {row.get('lot', '')} lot\n"
+    send(f"{icon} {row.get('side', '')} {row.get('lot', '')} lot\n"
             f"{row.get('fill_price', '')} → {row['close_price']}\n"
             f"손익 {profit:+,.2f}$ ({pct:+.2f}%)\n{nxt}\n"
             f"{account_line()}\n{summary_line(clock.now(), MAGIC, SYMBOL)}")
     if stopped:
-        tg.send("⛔ 5단계(최대 마틴)에서 손절 -> 오늘은 신규 진입을 멈춥니다. 내일 0단계부터 다시 시작합니다.")
+        send("⛔ 5단계(최대 마틴)에서 손절 -> 오늘은 신규 진입을 멈춥니다. 내일 0단계부터 다시 시작합니다.")
 
 
 def main():
@@ -292,16 +302,16 @@ def main():
         tg.enabled = False
     clock = ServerClock(SYMBOL)
     clock.update()
-    scheduler = ReportScheduler(STATE_JSON, MAGIC, SYMBOL, tg.send)
+    scheduler = ReportScheduler(STATE_JSON, MAGIC, SYMBOL, send)
     lots = " / ".join(f"{BASE_LOT * MARTIN_MULT ** i:g}" for i in range(MARTIN_MAX_LEVEL + 1))
     log.info(f"시작: 계좌 {acc.login} ({acc.server}, 데모) 잔고 {acc.balance} {acc.currency}, {SYMBOL} "
              f"SL {SL_USD} TP {TP_USD}, 마틴 {lots} lot{' [DRY-RUN]' if args.dry_run else ''}"
              f", 텔레그램 {'켜짐' if tg.enabled else '꺼짐'}")
-    tg.send(f"▶️ 자동매매 시작 (데모 {acc.login})\n{SYMBOL} SL {SL_USD}$ / TP {TP_USD}$\n마틴 {lots} lot\n"
+    send(f"▶️ 자동매매 시작 (데모 {acc.login})\n전략: {STRATEGY_DESC}\n마틴 {lots} lot\n"
             f"{account_line()}\n{summary_line(clock.now(), MAGIC, SYMBOL)}")
     if not args.dry_run and not mt5.terminal_info().trade_allowed:
         log.warning("MT5의 'Algo Trading'이 꺼져 있습니다. 켜야 주문이 들어갑니다.")
-        tg.send("⚠️ MT5의 'Algo Trading'이 꺼져 있습니다. 켜야 주문이 들어갑니다.")
+        send("⚠️ MT5의 'Algo Trading'이 꺼져 있습니다. 켜야 주문이 들어갑니다.")
 
     # 이전 실행에서 열어 둔 포지션이 있으면 이어서 기록
     open_row = None
@@ -361,10 +371,10 @@ def main():
             time.sleep(POLL_SEC)
     except KeyboardInterrupt:
         log.info("사용자 종료 (열린 포지션은 서버 SL/TP로 계속 관리됨)")
-        tg.send("⏸ 자동매매 종료 (열린 포지션은 서버 SL/TP로 계속 관리됩니다)")
+        send("⏸ 자동매매 종료 (열린 포지션은 서버 SL/TP로 계속 관리됩니다)")
     except BaseException as e:
         log.exception("오류로 종료")
-        tg.send(f"❗ 자동매매가 오류로 멈췄습니다: {e}")
+        send(f"❗ 자동매매가 오류로 멈췄습니다: {e}")
         raise
     finally:
         tg.flush()
