@@ -25,6 +25,10 @@
 조용한 시장 쉬기:
 - 신호가 나온 5분봉(완성 봉)의 ATR(14, Wilder)이 MIN_ATR(2.5$) 미만이면 진입 안 함
   (2022~24년처럼 변동이 작을 때는 이 신호가 손익분기 승률 71.4%를 못 넘었음)
+급변동 쉬기:
+- 신호 봉의 5분봉 ATR이 최근 20일(5분봉 ATR_REF_BARS개) ATR 중앙값의 MAX_ATR_MULT(2.0)배를 넘으면 진입 안 함
+  (손절 7.5$가 변동성에 비해 너무 좁아지는 날. 2025년으로 기준을 고르고 2026년 틱 체결로 확인:
+   PF 1.20 -> 1.22, 추세추종과 같이 돌리면 낙폭 35% -> 29%, 최악의 날 -24% -> -20%)
 최대 lot 제한:
 - 마틴 lot은 그날 시작 lot의 MAX_LOT_MULT(5)배까지만. 1,000달러면 0.03 / 0.06 / 0.12 / 0.15 / 0.15
 성적 기반 쉬기:
@@ -87,6 +91,10 @@ NO_ENTRY_UNTIL = "21:00"
 MAX_H1_FLIPS = 3
 # 조용한 시장 쉬기: 신호 봉의 5분봉 ATR(14)이 이 값(달러) 미만이면 진입 안 함
 MIN_ATR = 2.5
+# 급변동 쉬기: 신호 봉의 5분봉 ATR이 최근 ATR_REF_BARS개(20일) 5분봉 ATR 중앙값의 이 배수를 넘으면 진입 안 함
+MAX_ATR_MULT = 2.0
+ATR_REF_BARS = 20 * 276    # 5분봉 하루 약 276개 (23시간 장)
+ATR_REF_MIN = 2000         # 기록이 이보다 적으면 이 필터는 건너뜀
 # 마틴 lot 상한: 그날 시작 lot의 몇 배까지
 MAX_LOT_MULT = 5
 # 성적 기반 쉬기: 최근 N개 결과(실제 + 가상) 승률이 이 값(%) 미만이면 가상 진입만
@@ -228,6 +236,14 @@ def compute_signal(m5, h1):
     desc = (f"SAR {'상승' if up[-1] else '하락'}{'(전환)' if up[-1] != up[-2] else ''} "
             f"RSI {r[-1]:.1f} H1 SAR {'상승' if hdir == 1 else '하락'}")
     return side, m5.time.iat[-1], float(m5.close.iat[-1]), desc
+
+
+def atr_ref():
+    """최근 ATR_REF_BARS개 완성 5분봉의 ATR(14) 중앙값 (급변동 쉬기 기준). 기록이 부족하면 None"""
+    m5 = rates(mt5.TIMEFRAME_M5, ATR_REF_BARS + 100)
+    if m5 is None or len(m5) < ATR_REF_MIN:
+        return None
+    return float(atr(m5).iloc[-ATR_REF_BARS:].median())
 
 
 def h1_flips_today(h1, now):
@@ -496,6 +512,7 @@ def main():
     rate, n = winrate(wr)
     limits = (f"최대 lot {MAX_LOT} (마틴은 시작 lot의 {MAX_LOT_MULT}배까지), 하루 손실 한도 {daily}, "
               f"계좌 손실 한도 {ACCOUNT_STOP_PCT:g}%, ATR {MIN_ATR:g}$ 미만 쉼, "
+              f"ATR이 20일 중앙값의 {MAX_ATR_MULT:g}배 초과면 쉼, "
               f"최근 {WINRATE_N}건 승률 {WINRATE_MIN:g}% 미만 쉼 (지금 {n}건 {rate:.1f}%{', 쉬는 중' if is_paused(wr) else ''})")
     log.info(f"시작: 계좌 {acc.login} ({acc.server}, {kind}) 잔고 {acc.balance} {acc.currency}, {SYMBOL} "
              f"SL {SL_USD} TP {TP_USD}, 마틴 {lots}, {limits}{' [DRY-RUN]' if args.dry_run else ''}"
@@ -573,6 +590,8 @@ def main():
                         log.info(f"오늘 1시간봉 SAR 전환 {flips}번 (횡보)이라 신규 진입 안 함")
                     elif (a := float(atr(m5).iat[-1])) < MIN_ATR:
                         log.info(f"5분봉 ATR {a:.2f}$ < {MIN_ATR}$ (조용한 시장)이라 신규 진입 안 함")
+                    elif (ref := atr_ref()) and a > MAX_ATR_MULT * ref:
+                        log.info(f"5분봉 ATR {a:.2f}$ > 20일 중앙값 {ref:.2f}$ x {MAX_ATR_MULT:g} (급변동)이라 신규 진입 안 함")
                     elif reason := risk_block(now, lot_for(level, base)):
                         log.info(f"안전장치: {reason} -> 신규 진입 안 함")
                         if risk_notified != now.date():
