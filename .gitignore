@@ -1,5 +1,6 @@
 # 틱 데이터 캐시 (수 GB, 실행하면 MT5에서 다시 받음)
 # 단, 1분봉 zip(data/bars, 수십 MB)은 다른 PC에서 쓰려고 올림
+# 틱 압축본(data/ticks_z, 약 500MB)은 저장소가 공개라서 올리지 않음
 data/*
 !data/bars/
 

@@ -1,6 +1,7 @@
 """장기 백테스트: 2022-01 ~ 현재, RSI50 + H1 SAR (실제 틱 체결, 마틴 없음)
 
 - 틱을 한 달씩 받아 data/ticks/YYYY-MM.npz로 저장 (다음 실행부터는 저장본 사용)
+  깃에는 압축본 data/ticks_z/YYYY-MM.npz를 올림 (약 1/10 크기). data/ticks에 없으면 압축본을 풀어서 씀
 - 5분봉/1시간봉은 MT5 봉 기록이 짧아서 틱 Bid로 직접 만듦 (MT5 봉도 Bid 기준)
 - 신호: 5분봉 SAR(0.02, 0.2) 전환 + RSI(14) 50 방향 + 마지막 완성 1시간봉 SAR 방향 일치
 - 체결: 다음 5분봉 첫 틱 (매수 Ask / 매도 Bid), SL/TP 처음 닿는 틱 가격으로 청산
@@ -24,6 +25,7 @@ from indicators import psar, rsi
 
 FIRST_MONTH = (2022, 1)
 TICK_DIR = Path(__file__).resolve().parent.parent / "data" / "ticks"
+TICK_Z_DIR = TICK_DIR.parent / "ticks_z"
 SL, TP, REF_PRICE = 7.5, 3.0, 4150.0
 START_BALANCE = 1000.0
 FIXED_LOT = 0.02
@@ -63,12 +65,37 @@ def download_all():
             d = de
         a = np.concatenate(parts)
         np.savez(f, t=a["time_msc"], bid=a["bid"], ask=a["ask"])
+        save_z(y, m, a["time_msc"], a["bid"], a["ask"])
         print(f"  {y}-{m:02d}: 틱 {len(a):,}개 저장", flush=True)
 
 
+def save_z(y, m, t, bid, ask):
+    """압축 저장: 시간/Bid는 앞 틱과의 차이(ms / 0.01달러), Ask는 스프레드(0.01달러). 그대로 복원 안 되면 에러"""
+    TICK_Z_DIR.mkdir(parents=True, exist_ok=True)
+    bi, ai = np.round(bid * 100).astype(np.int64), np.round(ask * 100).astype(np.int64)
+    dt, db = np.diff(t, prepend=t[0]), np.diff(bi, prepend=bi[0])
+    sp = ai - bi
+    for x in (dt, db, sp):
+        if len(x) and np.abs(x).max() >= 2 ** 31:
+            raise ValueError(f"{y}-{m:02d}: 차이가 너무 커서 int32로 저장 불가")
+    z = dict(t0=t[:1], b0=bi[:1], dt=dt.astype(np.int32), db=db.astype(np.int32), sp=sp.astype(np.int32))
+    if not all(np.array_equal(u, v) for u, v in zip(unpack_z(z), (t, bid, ask))):
+        raise ValueError(f"{y}-{m:02d}: 압축 후 원본과 다름 (가격이 0.01 단위가 아님?)")
+    np.savez_compressed(TICK_Z_DIR / f"{y}-{m:02d}.npz", **z)
+
+
+def unpack_z(z):
+    t = z["t0"][0] + np.cumsum(z["dt"], dtype=np.int64) if len(z["dt"]) else np.zeros(0, np.int64)
+    bi = z["b0"][0] + np.cumsum(z["db"], dtype=np.int64) if len(z["db"]) else np.zeros(0, np.int64)
+    return t, bi / 100, (bi + z["sp"]) / 100
+
+
 def load_month(y, m):
-    z = np.load(TICK_DIR / f"{y}-{m:02d}.npz")
-    return z["t"], z["bid"], z["ask"]
+    f = TICK_DIR / f"{y}-{m:02d}.npz"
+    if f.exists():
+        z = np.load(f)
+        return z["t"], z["bid"], z["ask"]
+    return unpack_z(np.load(TICK_Z_DIR / f"{y}-{m:02d}.npz"))
 
 
 def bars_from_ticks(minutes):

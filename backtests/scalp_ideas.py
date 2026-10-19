@@ -39,7 +39,7 @@ def m5_bars():
     """틱으로 5분봉 만들기 (Bid 기준, lb.bars_from_ticks와 같은 결과).
     한 달씩 Bid 배열만 읽어 numpy로 묶고, 결과는 data/m5_bars.npz에 저장해 다음부터 다시 쓴다.
     틱 파일이 캐시보다 새로우면 다시 만든다."""
-    newest = max(p.stat().st_mtime for p in lb.TICK_DIR.glob("*.npz"))
+    newest = max(p.stat().st_mtime for d in (lb.TICK_DIR, lb.TICK_Z_DIR) for p in d.glob("*.npz"))
     if M5_CACHE.exists() and M5_CACHE.stat().st_mtime >= newest:
         z = np.load(M5_CACHE)
         b = pd.DataFrame({c: z[c] for c in ("open", "high", "low", "close")})
@@ -47,13 +47,12 @@ def m5_bars():
         return b
     parts = []
     for y, m in lb.months():
-        z = np.load(lb.TICK_DIR / f"{y}-{m:02d}.npz")
-        t, bid = z["t"], z["bid"]
+        t, bid, _ = lb.load_month(y, m)
         key = t // 300_000
         s = np.concatenate(([0], np.flatnonzero(np.diff(key)) + 1))
         e = np.append(s[1:], len(key)) - 1
         parts.append((key[s], bid[s], np.maximum.reduceat(bid, s), np.minimum.reduceat(bid, s), bid[e]))
-        del z, t, bid, key
+        del t, bid, key
     k, o, h, lo, c = (np.concatenate(x) for x in zip(*parts))
     _, first = np.unique(k, return_index=True)       # 달 경계에서 겹친 봉은 앞의 것만
     k, o, h, lo, c = k[first], o[first], h[first], lo[first], c[first]
