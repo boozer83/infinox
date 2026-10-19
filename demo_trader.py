@@ -1,4 +1,9 @@
-"""데모 계좌 관찰용 자동매매: XAUUSD 5분봉 SAR + RSI50 + H1 SAR + 일일 마틴
+"""데모 계좌 관찰용 자동매매: XAUUSD 5분봉 SAR + RSI50 + H1 SAR (고정 lot, 마틴은 MARTIN = True일 때만)
+
+2026-10-19 변경: 마틴 끔, 항상 그날 시작 잔고 1,000달러당 0.05 lot.
+  마틴은 첫 진입 익절에서만 돈을 벌고(TP 3 < SL 7.5라 2번째 이후 익절은 앞 손실을 못 메움) 위험만 키웠음.
+  2025-01~2026-10 실제 틱, 1,000달러 시작: 마틴 0.03 시작 11,131$ / 낙폭 31% / 최악의 날 -25%
+                                        -> 고정 0.05     14,279$ / 낙폭 30% / 최악의 날 -17%
 
 진입 규칙 (backtests/filters.py의 "RSI50+H1 SAR"와 동일):
 - 5분봉 SAR(0.02, 0.2)가 전환된 봉이 완성되면 바로 시장가 진입
@@ -7,7 +12,7 @@
 - 포지션은 한 번에 1개, 포지션이 있는 동안 새 신호는 무시
 - SL 7.5 / TP 3 달러를 주문과 함께 서버에 설정 (스크립트가 꺼져도 SL/TP는 작동)
 
-마틴 규칙 (backtests/daily_martin.py와 동일):
+마틴 규칙 (MARTIN = True일 때만, backtests/daily_martin.py와 동일):
 - 시작 lot = 그날 시작 잔고 1,000달러당 0.03 lot (0.01 단위 내림, 최소 0.01). 하루 안에서는 같은 시작 lot 유지
 - 손절로 끝나면 다음 진입 수량 x2, 익절이면 시작 lot으로 복귀
   연속 손절 중 최대 5번째 진입까지 (익절하면 1번째로 돌아가 그날 계속 거래). 잔고 1,000달러일 때 1~5번째: 0.03 / 0.06 / 0.12 / 0.24 / 0.48 (10,000달러면 0.30 ~ 4.80)
@@ -78,7 +83,8 @@ from telegram_notify import Notifier
 SL_USD = 7.5
 TP_USD = 3.0
 # 마틴
-LOT_PER_1000 = 0.03       # 그날 시작 잔고 1,000달러당 시작 lot
+MARTIN = False             # False면 손절해도 lot을 키우지 않고 항상 시작 lot (5번째 손절 정지도 없음)
+LOT_PER_1000 = 0.05       # 그날 시작 잔고 1,000달러당 시작 lot (마틴 쓸 때는 0.03이었음)
 MARTIN_MULT = 2
 MARTIN_MAX_LEVEL = 4       # 0부터 셈: 첫 진입(0) + 2배 4번 = 연속 손절 시 최대 5번째 진입까지
 # 주말 보호 (서버시간, 금요일)
@@ -126,8 +132,10 @@ clock = None       # ServerClock, main()에서 설정
 
 
 STRATEGY = "마틴"
-STRATEGY_DESC = ("5분봉 SAR 전환 + RSI50 + 1시간봉 SAR, 익절 3$ / 손절 7.5$, 일일 마틴 최대 5번째 진입 "
-                 "(lot 상한 시작 lot의 5배), 5분봉 ATR 2.5$ 미만 쉼, 최근 200건 승률 71.4% 미만 쉼")
+STRATEGY_DESC = ("5분봉 SAR 전환 + RSI50 + 1시간봉 SAR, 익절 3$ / 손절 7.5$, "
+                 + ("일일 마틴 최대 5번째 진입 (lot 상한 시작 lot의 5배)" if MARTIN else
+                    f"고정 lot (1,000$당 {LOT_PER_1000} lot, 마틴 없음)")
+                 + ", 5분봉 ATR 2.5$ 미만 쉼, ATR 20일 중앙값 2배 초과 쉼, 최근 200건 승률 71.4% 미만 쉼")
 
 
 def send(text):
@@ -168,6 +176,10 @@ def check_demo(allow_live=False, login=None):
     if acc.trade_mode != mt5.ACCOUNT_TRADE_MODE_DEMO and not allow_live:
         mt5.shutdown()
         raise SystemExit(f"데모 계좌가 아닙니다 ({acc.login}, {acc.server}). 실계좌는 --live 옵션으로만 실행합니다.")
+    if acc.trade_mode == mt5.ACCOUNT_TRADE_MODE_DEMO and allow_live:
+        mt5.shutdown()
+        raise SystemExit(f"--live인데 데모 계좌에 연결됐습니다 ({acc.login}). MT5_TERMINAL_PATH / MT5_PORTABLE / "
+                         f"MT5_SYMBOL 환경변수로 실계좌 터미널을 지정하세요.")
     return acc
 
 
@@ -273,6 +285,8 @@ def martin_state(now):
     closes = sorted((d for d in deals if d.magic == MAGIC and d.symbol == SYMBOL and d.entry == mt5.DEAL_ENTRY_OUT),
                     key=lambda d: d.time_msc)
     level, stopped = 0, False
+    if not MARTIN:
+        return level, stopped, base_lot(now, deals)
     for d in closes:
         if d.profit + d.commission + d.swap < 0:
             if level >= MARTIN_MAX_LEVEL:
@@ -282,6 +296,10 @@ def martin_state(now):
         else:
             level = 0
     return level, stopped, base_lot(now, deals)
+
+
+def level_text(level):
+    return f"마틴 {level + 1}번째" if MARTIN else "고정 lot"
 
 
 def lot_for(level, base):
@@ -405,9 +423,9 @@ def place(side, lot, level, signal_bar, signal_price):
         "fill_price": fill, "slippage": round((bid_equiv - signal_price) * side, 3),
         "spread": round(spread, 3), "sl": sl, "tp": tp, "ticket": res.order,
     }
-    log.info(f"진입 {row['side']} {lot}lot (마틴 {level + 1}번째) @ {fill} "
+    log.info(f"진입 {row['side']} {lot}lot ({level_text(level)}) @ {fill} "
              f"(신호봉 종가 {signal_price}, SL {sl}, TP {tp}, 스프레드 {row['spread']})")
-    send(f"{'🟢 매수' if side == 1 else '🔴 매도'} 진입 {lot} lot (마틴 {level + 1}번째)\n"
+    send(f"{'🟢 매수' if side == 1 else '🔴 매도'} 진입 {lot} lot ({level_text(level)})\n"
             f"전략: {STRATEGY_DESC}\n"
             f"가격 {fill} | SL {sl} | TP {tp}\n"
             f"최대 손실 약 {SL_USD * lot * 100:,.0f}$ / 목표 이익 약 {TP_USD * lot * 100:,.0f}$\n"
@@ -467,7 +485,7 @@ def notify_close(row):
     pct = profit / (bal - profit) * 100 if bal - profit > 0 else 0.0
     level, stopped, base = martin_state(clock.now())
     icon = {"TP": "✅ 익절", "SL": "❌ 손절", "FRIDAY": "⏹ 금요일 청산"}.get(row["result"], "⏹ 청산")
-    nxt = "오늘 거래 정지 (5번째 진입 손절)" if stopped else f"다음 진입 마틴 {level + 1}번째 ({lot_for(level, base)} lot)"
+    nxt = "오늘 거래 정지 (5번째 진입 손절)" if stopped else f"다음 진입 {level_text(level)} ({lot_for(level, base)} lot)"
     log.info(f"청산 {row['result']} @ {row['close_price']} 손익 {profit} -> {nxt}")
     send(f"{icon} {row.get('side', '')} {row.get('lot', '')} lot\n"
             f"{row.get('fill_price', '')} → {row['close_price']}\n"
@@ -505,19 +523,19 @@ def main():
     clock.update()
     scheduler = ReportScheduler(STATE_JSON, MAGIC, SYMBOL, send)
     base = base_lot(clock.now())
-    lots = " / ".join(f"{lot_for(i, base):g}" for i in range(MARTIN_MAX_LEVEL + 1))
-    lots += f" lot (오늘 시작 잔고 기준, 1,000$당 {LOT_PER_1000} lot)"
+    lots = " / ".join(f"{lot_for(i, base):g}" for i in range(MARTIN_MAX_LEVEL + 1 if MARTIN else 1))
+    lots += f" lot (오늘 시작 잔고 기준, 1,000$당 {LOT_PER_1000} lot{'' if MARTIN else ', 마틴 없음'})"
     daily = "꺼짐" if DAILY_LOSS_PCT is None else f"{DAILY_LOSS_PCT:g}%"
     wr = load_wr()
     rate, n = winrate(wr)
-    limits = (f"최대 lot {MAX_LOT} (마틴은 시작 lot의 {MAX_LOT_MULT}배까지), 하루 손실 한도 {daily}, "
+    limits = (f"최대 lot {MAX_LOT}{f' (마틴은 시작 lot의 {MAX_LOT_MULT}배까지)' if MARTIN else ''}, 하루 손실 한도 {daily}, "
               f"계좌 손실 한도 {ACCOUNT_STOP_PCT:g}%, ATR {MIN_ATR:g}$ 미만 쉼, "
               f"ATR이 20일 중앙값의 {MAX_ATR_MULT:g}배 초과면 쉼, "
               f"최근 {WINRATE_N}건 승률 {WINRATE_MIN:g}% 미만 쉼 (지금 {n}건 {rate:.1f}%{', 쉬는 중' if is_paused(wr) else ''})")
     log.info(f"시작: 계좌 {acc.login} ({acc.server}, {kind}) 잔고 {acc.balance} {acc.currency}, {SYMBOL} "
-             f"SL {SL_USD} TP {TP_USD}, 마틴 {lots}, {limits}{' [DRY-RUN]' if args.dry_run else ''}"
+             f"SL {SL_USD} TP {TP_USD}, {'마틴 ' if MARTIN else ''}{lots}, {limits}{' [DRY-RUN]' if args.dry_run else ''}"
              f", 텔레그램 {'켜짐' if tg.enabled else '꺼짐'}")
-    send(f"▶️ 자동매매 시작 ({kind} {acc.login})\n전략: {STRATEGY_DESC}\n마틴 {lots}\n안전장치: {limits}\n"
+    send(f"▶️ 자동매매 시작 ({kind} {acc.login})\n전략: {STRATEGY_DESC}\n{'마틴 ' if MARTIN else 'lot '}{lots}\n안전장치: {limits}\n"
             f"{account_line()}\n{summary_line(clock.now(), MAGIC, SYMBOL)}")
     if load_risk().get("halted"):
         send(f"🛑 계좌 손실 한도로 중단된 상태입니다: {load_risk()['halted']}\n"
