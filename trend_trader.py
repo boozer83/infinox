@@ -9,15 +9,18 @@
 - 수량: 손절에 걸리면 잔고의 RISK_PCT(2%)를 잃도록 계산 (0.01 단위 내림)
 - 포지션은 한 번에 1개, 주말에도 보유 (백테스트와 동일)
 
-안전장치: 데모 계좌가 아니면 시작하지 않음, 매직 넘버 20261018 포지션만 관리, 증거금 부족 시 진입 안 함
-          demo_trader.py(매직 20261017)와 같은 계좌에서 같이 돌려도 서로의 포지션을 건드리지 않음
+안전장치: 기본은 데모 계좌 전용. 실계좌는 --live 옵션을 줄 때만 실행. 실행 중 로그인 계좌가 바뀌면 즉시 멈춤
+          매직 넘버 20261018 포지션만 관리, 증거금 부족 시 진입 안 함
+          demo_trader.py(매직 20261017), asia_breakout_trader.py(20261019)와 같은 계좌에서 같이 돌려도
+          서로의 포지션을 건드리지 않음
 
-기록 (trend_log/ 폴더): trades.csv, events.log, state.json
+기록 (trend_log/ 폴더, 실계좌는 trend_live_log/): trades.csv, events.log, state.json
 텔레그램: demo_trader.py와 같은 봇, 메시지 앞에 [추세] 표시
 
 사용법:
   python trend_trader.py            # 실행 (Ctrl+C로 종료)
   python trend_trader.py --dry-run  # 주문 없이 신호만 계산해서 출력 (텔레그램 전송 안 함)
+  python trend_trader.py --live     # 실계좌에서 실행 (데모에서 충분히 확인한 뒤에만)
 """
 import argparse
 import csv
@@ -31,7 +34,7 @@ import numpy as np
 import pandas as pd
 
 from config import CONTRACT, SYMBOL
-from demo_trader import check_demo, connect, filling_mode, find_close, rates
+from demo_trader import account_kind, check_demo, connect, filling_mode, find_close, rates
 from indicators import atr
 from reports import ReportScheduler, ServerClock, summary_line
 from telegram_notify import Notifier
@@ -77,6 +80,14 @@ def setup_logging():
         h.setFormatter(fmt)
         log.addHandler(h)
     log.setLevel(logging.INFO)
+
+
+def use_live_paths():
+    """실계좌 실행은 기록을 trend_live_log/에 따로 남기고, 텔레그램에 실계좌로 표시"""
+    global LOG_DIR, TRADES_CSV, STATE_JSON, STRATEGY
+    LOG_DIR = LOG_DIR.parent / "trend_live_log"
+    TRADES_CSV, STATE_JSON = LOG_DIR / "trades.csv", LOG_DIR / "state.json"
+    STRATEGY = "추세·실계좌"
 
 
 def account_line():
@@ -202,20 +213,24 @@ def main():
     global tg, clock
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true", help="주문 없이 신호만 계산")
+    ap.add_argument("--live", action="store_true", help="실계좌에서도 실행 (기본은 데모 전용)")
     args = ap.parse_args()
+    if args.live:
+        use_live_paths()
     setup_logging()
-    connect()
-    acc = check_demo()
+    connect(args.live)
+    acc = check_demo(args.live)
+    kind = account_kind(acc)
     tg = Notifier()
     if args.dry_run:
         tg.enabled = False
     clock = ServerClock(SYMBOL)
     clock.update()
     scheduler = ReportScheduler(STATE_JSON, MAGIC, SYMBOL, send)
-    log.info(f"시작: 계좌 {acc.login} ({acc.server}, 데모) 잔고 {acc.balance} {acc.currency}, {SYMBOL} H4 "
+    log.info(f"시작: 계좌 {acc.login} ({acc.server}, {kind}) 잔고 {acc.balance} {acc.currency}, {SYMBOL} H4 "
              f"진입 {N_ENTRY}봉 / 청산 {N_EXIT}봉 / 손절 {SL_ATR} ATR / 위험 {RISK_PCT:.0%}"
              f"{' [DRY-RUN]' if args.dry_run else ''}, 텔레그램 {'켜짐' if tg.enabled else '꺼짐'}")
-    send(f"▶️ 추세추종 시작 (데모 {acc.login})\n전략: {STRATEGY_DESC}\n{account_line()}")
+    send(f"▶️ 추세추종 시작 ({kind} {acc.login})\n전략: {STRATEGY_DESC}\n{account_line()}")
     if not args.dry_run and not mt5.terminal_info().trade_allowed:
         log.warning("MT5의 'Algo Trading'이 꺼져 있습니다. 켜야 주문이 들어갑니다.")
         send("⚠️ MT5의 'Algo Trading'이 꺼져 있습니다.")
@@ -233,8 +248,8 @@ def main():
                 log.warning("터미널 연결 끊김, 재연결 시도")
                 mt5.shutdown()
                 time.sleep(5)
-                connect()
-            check_demo()
+                connect(args.live)
+            check_demo(args.live, acc.login)
             clock.update()
             now = clock.now()
 
