@@ -1,8 +1,5 @@
 # 틱 데이터 캐시 (수 GB, 실행하면 MT5에서 다시 받음)
-# 단, 1분봉 zip(data/bars, 수십 MB)과 틱 압축본(data/ticks_z, 약 500MB)은 다른 PC에서 쓰려고 올림
-data/*
-!data/bars/
-!data/ticks_z/
+data/
 
 # 텔레그램 봇 토큰 (절대 올리지 말 것)
 telegram.json
