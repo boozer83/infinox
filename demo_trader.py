@@ -133,7 +133,7 @@ tg = None          # Notifier, main()에서 설정
 clock = None       # ServerClock, main()에서 설정
 
 
-STRATEGY = "마틴"
+STRATEGY = "SAR 단타"
 STRATEGY_DESC = ("5분봉 SAR 전환 + RSI50 + 1시간봉 SAR, 익절 3$ / 손절 7.5$, "
                  + ("일일 마틴 최대 5번째 진입 (lot 상한 시작 lot의 5배)" if MARTIN else
                     f"고정 lot (1,000$당 {LOT_PER_1000} lot, 마틴 없음)")
@@ -501,7 +501,7 @@ def use_live_paths():
     LOG_DIR = LOG_DIR.parent / "live_log"
     TRADES_CSV, STATE_JSON, RISK_JSON = LOG_DIR / "trades.csv", LOG_DIR / "state.json", LOG_DIR / "risk_state.json"
     WINRATE_JSON = LOG_DIR / "winrate.json"
-    STRATEGY = "마틴·실계좌"
+    STRATEGY = "SAR 단타·실계좌"
 
 
 def main():

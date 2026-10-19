@@ -15,7 +15,7 @@
           서로의 포지션을 건드리지 않음
 
 기록 (trend_log/ 폴더, 실계좌는 trend_live_log/): trades.csv, events.log, state.json
-텔레그램: demo_trader.py와 같은 봇, 메시지 앞에 [추세] 표시
+텔레그램: demo_trader.py와 같은 봇, 메시지 앞에 [H4 추세] 표시
 
 사용법:
   python trend_trader.py            # 실행 (Ctrl+C로 종료)
@@ -64,7 +64,7 @@ tg = None
 clock = None
 
 
-STRATEGY = "추세"
+STRATEGY = "H4 추세"
 STRATEGY_DESC = f"4시간봉 {N_ENTRY}봉 돌파 추세추종, {N_EXIT}봉 반대 돌파 청산, 손절 {SL_ATR:g} ATR, 거래당 위험 {RISK_PCT:.0%}"
 
 
@@ -87,7 +87,7 @@ def use_live_paths():
     global LOG_DIR, TRADES_CSV, STATE_JSON, STRATEGY
     LOG_DIR = LOG_DIR.parent / "trend_live_log"
     TRADES_CSV, STATE_JSON = LOG_DIR / "trades.csv", LOG_DIR / "state.json"
-    STRATEGY = "추세·실계좌"
+    STRATEGY = "H4 추세·실계좌"
 
 
 def account_line():

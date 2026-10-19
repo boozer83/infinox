@@ -81,7 +81,7 @@ FIELDS = ["date", "signal_bar", "side", "level", "lot", "range_hi", "range_lo", 
           "signal_price", "order_time", "fill_price", "spread", "sl", "tp", "ticket",
           "close_time", "close_price", "profit", "result"]
 
-STRATEGY = "아시아돌파"
+STRATEGY = "아시아 3마틴"
 STRATEGY_DESC = (f"아시아 레인지({RANGE_FROM}~{RANGE_UNTIL}) 돌파 {RANGE_UNTIL}~{ENTRY_UNTIL} + {MOM_DAYS}일 모멘텀, "
                  f"손절=익절=일봉ATR×{ATR_MULT}, {EXIT_AT} 청산, 마틴 {MARTIN_STEPS}단계")
 
@@ -123,7 +123,7 @@ def use_live_paths():
     LOG_DIR = LOG_DIR.parent / "asia_live_log"
     TRADES_CSV, STATE_JSON = LOG_DIR / "trades.csv", LOG_DIR / "state.json"
     BOT_JSON, RISK_JSON = LOG_DIR / "bot_state.json", LOG_DIR / "risk_state.json"
-    STRATEGY = "아시아돌파·실계좌"
+    STRATEGY = "아시아 3마틴·실계좌"
 
 
 def check_account(allow_live=False, login=None):
