@@ -11,6 +11,8 @@ telegram.json
 demo_log/
 trend_log/
 live_log/
+asia_log/
+asia_live_log/
 results/
 *.csv
 
