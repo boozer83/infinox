@@ -36,7 +36,7 @@ import pandas as pd
 from config import CONTRACT, SYMBOL
 from demo_trader import account_kind, check_demo, connect, filling_mode, find_close, rates
 from indicators import atr
-from reports import ReportScheduler, ServerClock, summary_line
+from reports import ServerClock, summary_line
 from telegram_notify import Notifier
 
 # 전략
@@ -226,7 +226,6 @@ def main():
         tg.enabled = False
     clock = ServerClock(SYMBOL)
     clock.update()
-    scheduler = ReportScheduler(STATE_JSON, MAGIC, SYMBOL, send)
     log.info(f"시작: 계좌 {acc.login} ({acc.server}, {kind}) 잔고 {acc.balance} {acc.currency}, {SYMBOL} H4 "
              f"진입 {N_ENTRY}봉 / 청산 {N_EXIT}봉 / 손절 {SL_ATR} ATR / 위험 {RISK_PCT:.0%}"
              f"{' [DRY-RUN]' if args.dry_run else ''}, 텔레그램 {'켜짐' if tg.enabled else '꺼짐'}")
@@ -255,8 +254,6 @@ def main():
 
             if open_row and handle_closed(open_row):
                 open_row = None
-            if not args.dry_run:
-                scheduler.check(now)
 
             df = rates(TIMEFRAME, BARS)
             if df is not None and len(df) > N_ENTRY + 20 and df.time.iat[-1] != last_bar:

@@ -48,7 +48,7 @@ import numpy as np
 import pandas as pd
 
 from config import CONTRACT, SYMBOL, mt5_init
-from reports import ReportScheduler, ServerClock, summary_line
+from reports import ServerClock, summary_line
 from telegram_notify import Notifier
 
 # 전략 (서버시간)
@@ -74,7 +74,7 @@ POLL_SEC = 1.0
 
 LOG_DIR = Path(__file__).resolve().parent / "asia_log"
 TRADES_CSV = LOG_DIR / "trades.csv"
-STATE_JSON = LOG_DIR / "state.json"          # 리포트 스케줄러용
+STATE_JSON = LOG_DIR / "state.json"
 BOT_JSON = LOG_DIR / "bot_state.json"        # 오늘 처리 여부, 사이클 1단계 lot
 RISK_JSON = LOG_DIR / "risk_state.json"
 FIELDS = ["date", "signal_bar", "side", "level", "lot", "range_hi", "range_lo", "daily_atr", "sl_usd",
@@ -384,7 +384,6 @@ def main():
         tg.enabled = False
     clock = ServerClock(SYMBOL)
     clock.update()
-    scheduler = ReportScheduler(STATE_JSON, MAGIC, SYMBOL, send)
 
     now = clock.now()
     datr, mom = daily_features(now.date())
@@ -430,8 +429,6 @@ def main():
                     notify_close(open_row)
                     open_row = None
 
-            if not args.dry_run:
-                scheduler.check(now)
 
             # 23:00 시간 청산 (실패하면 1분 뒤 재시도)
             if minutes(now) >= hm(EXIT_AT) and not args.dry_run and time.time() - last_close_try > 60:

@@ -57,7 +57,7 @@
 
 텔레그램 (telegram.json 설정이 있을 때, 설정법은 telegram_notify.py 참고):
 - 진입/청산 때마다 거래 내용과 오늘/이번주/이번달 수익률
-- 일일(월~금 23:58 서버시간), 주간(금요일), 월간(마지막 거래일) 리포트
+- 일일·주간·월간 리포트는 report_bot.py가 계좌별로 한 번에 보냄 (한국시간 평일 21:00)
 - 시작/종료, 마틴 정지, 금요일 청산, 주문 실패
 
 사용법:
@@ -78,7 +78,7 @@ import pandas as pd
 
 from config import SYMBOL, mt5_init
 from indicators import atr, psar, rsi
-from reports import ReportScheduler, ServerClock, summary_line
+from reports import ServerClock, summary_line
 from telegram_notify import Notifier
 
 # 전략
@@ -521,7 +521,6 @@ def main():
         tg.enabled = False
     clock = ServerClock(SYMBOL)
     clock.update()
-    scheduler = ReportScheduler(STATE_JSON, MAGIC, SYMBOL, send)
     base = base_lot(clock.now())
     lots = " / ".join(f"{lot_for(i, base):g}" for i in range(MARTIN_MAX_LEVEL + 1 if MARTIN else 1))
     lots += f" lot (오늘 시작 잔고 기준, 1,000$당 {LOT_PER_1000} lot{'' if MARTIN else ', 마틴 없음'})"
@@ -575,8 +574,6 @@ def main():
                     open_row = None
             check_virtual(wr)
 
-            if not args.dry_run:
-                scheduler.check(now)
 
             friday = now.weekday() == 4
             # 청산이 실패해도(장 마감 등) 1분에 한 번만 다시 시도

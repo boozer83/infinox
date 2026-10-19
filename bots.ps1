@@ -1,4 +1,4 @@
-# Start (or restart) the 3 bots on the demo and/or live account.
+# Start (or restart) the 3 bots + the report bot on the demo and/or live account.
 #   powershell -ExecutionPolicy Bypass -File bots.ps1 demo|live|all|status|stop-demo|stop-live
 # demo: default MT5 terminal (demo account 100136645)
 # live: portable terminal C:\MT5_LIVE, symbol XAUUSD#, every bot with --live
@@ -6,7 +6,7 @@
 param([ValidateSet("demo", "live", "all", "status", "stop-demo", "stop-live")][string]$Which = "status")
 
 $Dir = $PSScriptRoot
-$Bots = @("demo_trader.py", "trend_trader.py", "asia_breakout_trader.py")
+$Bots = @("demo_trader.py", "trend_trader.py", "asia_breakout_trader.py", "report_bot.py")
 $LiveEnv = @{ MT5_TERMINAL_PATH = "C:\MT5_LIVE\terminal64.exe"; MT5_PORTABLE = "1"; MT5_SYMBOL = "XAUUSD#" }
 
 function Get-Bots([bool]$Live) {

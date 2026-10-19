@@ -11,6 +11,8 @@ trend_live_log/
 live_log/
 asia_log/
 asia_live_log/
+report_log/
+report_live_log/
 results/
 *.csv
 

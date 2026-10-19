@@ -5,6 +5,7 @@
 // - 끄면 신규 진입만 멈춤. 이미 열린 포지션은 서버 SL/TP와 청산 규칙(금요일·23:00·추세 종료)으로 계속 관리
 // 선택 / 시작 상태는 MQL4\Files\infinox_panel.txt에 저장 -> MT4를 껐다 켜도 그대로
 // 각 전략 규칙은 mod_martin.mqh / mod_trend.mqh / mod_asia.mqh (파이썬 봇과 같음)
+// 리포트: 한국시간 평일 21:00에 계좌 리포트 (mod_report.mqh, report_bot.py와 같음)
 #property strict
 #property description "Infinox 봇 3개(SAR 단타 / H4 추세 / 아시아 3마틴) + 켜고 끄는 패널"
 
@@ -35,6 +36,8 @@ datetime g_lastPanel = 0;
 
 int StratMagic(int i) { return i == 0 ? MagicMartin : i == 1 ? MagicTrend : MagicAsia; }
 bool IsOn(int i) { return g_master && g_sel[i]; }
+
+#include "mod_report.mqh"
 
 void SavePanel()
 {
@@ -182,6 +185,7 @@ int OnInit()
    M_Init();
    T_Init();
    A_Init();
+   R_Init();
    if (g_master)
    {
       string list = "";
@@ -213,6 +217,7 @@ void OnTimer()
    M_Timer(IsOn(0));
    T_Timer(IsOn(1));
    A_Timer(IsOn(2));
+   R_Timer();
    if (TimeLocal() - g_lastPanel >= 5)
    {
       g_lastPanel = TimeLocal();
