@@ -45,7 +45,9 @@
 - 기본은 데모 계좌 전용. 실계좌는 --live 옵션을 줄 때만 실행. 실행 중 로그인 계좌가 바뀌면 즉시 멈춤
 - 이 스크립트의 매직 넘버가 붙은 포지션만 확인/관리
 - 증거금이 부족하면 진입하지 않음
-- 최대 lot: 진입할 lot이 MAX_LOT을 넘으면 그날 신규 진입 정지 (설정 실수/버그 방지)
+- 최대 lot: 진입할 lot이 MAX_LOT을 넘으면 MAX_LOT으로 깎아서 진입 (설정 실수/버그 방지)
+  (2026-10-19 변경: 전에는 그날 진입 정지 -> 잔고 약 2만$부터 거의 거래를 안 했음.
+   2026-01~10, 1,500만원 계좌에서 3개 봇 같이: 정지 +180% / 깎아서 진입 +614%, 낙폭 둘 다 19.8%)
 - 하루 손실 한도: 오늘 이 전략의 청산 손익이 그날 시작 잔고의 DAILY_LOSS_PCT 이상 손실이면 그날 신규 진입 정지.
   지금은 꺼 둠(None) -> 마틴이 이길 때까지 5번째 진입까지 감
 - 계좌 손실 한도: 평가금이 기록된 최고 잔고보다 ACCOUNT_STOP_PCT(50%) 이상 줄면 신규 진입 중단.
@@ -108,7 +110,7 @@ WINRATE_N = 200
 WINRATE_MIN = 71.4
 FRIDAY_CLOSE = "23:30"
 # 실계좌 안전장치
-MAX_LOT = 1.0             # 한 번에 진입할 최대 lot
+MAX_LOT = 1.0             # 한 번에 진입할 최대 lot (넘으면 이 lot으로 깎아서 진입)
 DAILY_LOSS_PCT = None     # 하루 손실 한도 (그날 시작 잔고 대비 %), None = 끔. 15%는 4연속 손절 날 마틴 회복을 끊었음
 ACCOUNT_STOP_PCT = 50.0   # 계좌 손실 한도 (최고 잔고 대비 평가금 감소 %). 30%는 2025-08 낙폭(34%)에 걸려 멈췄음
 # 주문
@@ -218,8 +220,6 @@ def risk_block(now, lot):
                if d.magic == MAGIC and d.entry == mt5.DEAL_ENTRY_OUT)
     if DAILY_LOSS_PCT is not None and start_bal > 0 and mine <= -DAILY_LOSS_PCT / 100 * start_bal:
         return f"하루 손실 한도 도달 (오늘 {mine:+,.2f} / 시작 잔고 {start_bal:,.2f}의 {DAILY_LOSS_PCT:g}%)"
-    if lot > MAX_LOT:
-        return f"진입 lot {lot}이 최대 lot {MAX_LOT}을 넘음"
     return None
 
 
@@ -304,7 +304,7 @@ def level_text(level):
 
 def lot_for(level, base):
     info = mt5.symbol_info(SYMBOL)
-    lot = min(base * MARTIN_MULT ** level, base * MAX_LOT_MULT)
+    lot = min(base * MARTIN_MULT ** level, base * MAX_LOT_MULT, MAX_LOT)
     lot = round(round(lot / info.volume_step) * info.volume_step, 2)
     return min(max(lot, info.volume_min), info.volume_max)
 
@@ -528,7 +528,7 @@ def main():
     daily = "꺼짐" if DAILY_LOSS_PCT is None else f"{DAILY_LOSS_PCT:g}%"
     wr = load_wr()
     rate, n = winrate(wr)
-    limits = (f"최대 lot {MAX_LOT}{f' (마틴은 시작 lot의 {MAX_LOT_MULT}배까지)' if MARTIN else ''}, 하루 손실 한도 {daily}, "
+    limits = (f"최대 lot {MAX_LOT} (넘으면 {MAX_LOT}로 진입){f' (마틴은 시작 lot의 {MAX_LOT_MULT}배까지)' if MARTIN else ''}, 하루 손실 한도 {daily}, "
               f"계좌 손실 한도 {ACCOUNT_STOP_PCT:g}%, ATR {MIN_ATR:g}$ 미만 쉼, "
               f"ATR이 20일 중앙값의 {MAX_ATR_MULT:g}배 초과면 쉼, "
               f"최근 {WINRATE_N}건 승률 {WINRATE_MIN:g}% 미만 쉼 (지금 {n}건 {rate:.1f}%{', 쉬는 중' if is_paused(wr) else ''})")
