@@ -1,4 +1,4 @@
-// Infinox_Bots EA 공통 코드 (전략 모듈 mod_*.mqh가 같이 씀)
+﻿// Infinox_Bots EA 공통 코드 (전략 모듈 mod_*.mqh가 같이 씀)
 // - 텔레그램 전송 (MQL4\Files\infinox_telegram.txt: 1줄 토큰, 2줄 chat_id)
 // - 상태 파일 (MQL4\Files\<이름>.txt, key=value 줄) -> EA를 껐다 켜도 이어짐
 // - 지표: 파이썬 indicators.py와 같은 계산 (SAR, RSI·ATR은 Wilder ewm)
@@ -140,9 +140,20 @@ int LoadBars(int tf, int count, datetime &t[], double &h[], double &l[], double 
 // 파라볼릭 SAR(0.02, 0.2): 각 봉이 상승 추세면 true (indicators.psar와 같음)
 void Psar(const double &h[], const double &l[], int n, bool &up[])
 {
+   double sv[], tg[];
+   PsarLevels(h, l, n, up, sv, tg);
+}
+
+// SAR + 각 봉 끝의 SAR 점(sv), 그 봉에서 뚫어야 했던 값(tg) (indicators.psar_levels와 같음)
+void PsarLevels(const double &h[], const double &l[], int n, bool &up[], double &sv[], double &tg[])
+{
    double step = 0.02, mx = 0.2;
    ArrayResize(up, n);
+   ArrayResize(sv, n);
+   ArrayResize(tg, n);
    up[0] = true;
+   sv[0] = l[0];
+   tg[0] = 0;
    double sar = l[0], ep = h[0], af = step;
    for (int i = 1; i < n; i++)
    {
@@ -152,6 +163,7 @@ void Psar(const double &h[], const double &l[], int n, bool &up[])
       if (up[i - 1])
       {
          s = MathMin(s, MathMin(l[i - 1], l2));
+         tg[i] = s;
          if (l[i] < s)
          {
             up[i] = false;
@@ -172,6 +184,7 @@ void Psar(const double &h[], const double &l[], int n, bool &up[])
       else
       {
          s = MathMax(s, MathMax(h[i - 1], h2));
+         tg[i] = s;
          if (h[i] > s)
          {
             up[i] = true;
@@ -190,6 +203,7 @@ void Psar(const double &h[], const double &l[], int n, bool &up[])
          }
       }
       sar = s;
+      sv[i] = s;
    }
 }
 
@@ -289,6 +303,17 @@ double BalanceAt(datetime start)
    return AccountBalance() - s;
 }
 
+// start ~ end 입금 합계 (출금 제외). 수익률 기준 = 시작 잔고 + 입금 (입금 때문에 %가 부풀지 않게)
+double Deposits(datetime start, datetime end)
+{
+   double s = 0;
+   for (int i = OrdersHistoryTotal() - 1; i >= 0; i--)
+      if (OrderSelect(i, SELECT_BY_POS, MODE_HISTORY) && OrderType() == 6 && OrderProfit() > 0
+          && OrderCloseTime() >= start && OrderCloseTime() < end)
+         s += OrderProfit();
+   return s;
+}
+
 string PctLine(string name, datetime start, int magic)
 {
    double pnl = 0;
@@ -296,7 +321,7 @@ string PctLine(string name, datetime start, int magic)
       if (OrderSelect(i, SELECT_BY_POS, MODE_HISTORY) && OrderType() <= OP_SELL && OrderMagicNumber() == magic
           && OrderSymbol() == Symbol() && OrderCloseTime() >= start)
          pnl += OrderProfit() + OrderSwap() + OrderCommission();
-   double b0 = BalanceAt(start);
+   double b0 = BalanceAt(start) + Deposits(start, TimeCurrent() + 86400);
    return StringFormat("%s %+.2f%% (%+.2f$)", name, b0 > 0 ? pnl / b0 * 100 : 0.0, pnl);
 }
 

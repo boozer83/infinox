@@ -1,4 +1,4 @@
-// 계좌 리포트 모듈 (report_bot.py와 같은 방식). Infinox_Bots.mq4가 include
+﻿// 계좌 리포트 모듈 (report_bot.py와 같은 방식). Infinox_Bots.mq4가 include
 // 한국시간 월~금 21:00에 메시지 하나로 전략별 손익:
 // - 매일: 일일 = 지난 리포트(전 평일 21:00) 이후
 // - 금요일: 주간 추가 = 지난 금요일 21:00 이후
@@ -41,7 +41,7 @@ datetime R_LastWeekdayOfMonth(datetime d0)
 string R_Section(string title, datetime start, datetime end, int off)
 {
    datetime s = start - 9 * 3600 + off, e = end - 9 * 3600 + off;
-   double b0 = BalanceAt(s), b1 = BalanceAt(e);
+   double b0 = BalanceAt(s), b1 = BalanceAt(e), dep = Deposits(s, e), base = b0 + dep;
    string out = StringFormat("%s (%s ~ %s)", title, TimeToString(start, TIME_DATE | TIME_MINUTES), TimeToString(end, TIME_DATE | TIME_MINUTES));
    double total = 0;
    for (int k = 0; k < 3; k++)
@@ -60,9 +60,11 @@ string R_Section(string title, datetime start, datetime end, int off)
          }
       total += pnl;
       string trades = n > 0 ? StringFormat("%d건 (익절 %d / 손절 %d, 승률 %.0f%%)", n, w, n - w, w * 100.0 / n) : "거래 없음";
-      out += StringFormat("\n• %s: %+.2f%% (%+.2f$) · %s", g_names[k], b0 > 0 ? pnl / b0 * 100 : 0.0, pnl, trades);
+      out += StringFormat("\n• %s: %+.2f%% (%+.2f$) · %s", g_names[k], base > 0 ? pnl / base * 100 : 0.0, pnl, trades);
    }
-   out += StringFormat("\n합계 %+.2f%% (%+.2f$)\n잔고 %.2f → %.2f", b0 > 0 ? total / b0 * 100 : 0.0, total, b0, b1);
+   out += StringFormat("\n합계 %+.2f%% (%+.2f$)\n잔고 %.2f → %.2f", base > 0 ? total / base * 100 : 0.0, total, b0, b1);
+   if (dep > 0)
+      out += StringFormat(" (입금 +%.2f$ 포함, 수익률은 입금액까지 기준)", dep);
    return out;
 }
 

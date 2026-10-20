@@ -5,13 +5,20 @@
 2. 09:00~17:55에 시작한 5분봉이 완성됐을 때 종가가 레인지 위 → 매수, 아래 → 매도.
    그날 첫 돌파만 봄 (첫 돌파가 아래 3번에 걸러지면 그날은 거래 없음)
 3. 5일 모멘텀 필터: 전일 종가 > 6거래일 전 종가면 매수만, 작으면 매도만 (같으면 거래 없음)
-4. 손절 = 익절 = 0.5 × 일봉 ATR(14, Wilder, 전일까지)  (2026년 기준 약 30~60$)
+4. 기준폭 U = 0.5 × 일봉 ATR(14, Wilder, 전일까지). 익절 = U, 손절 = 0.75 × U  (v2, 2026-10-21)
 5. 23:00에 보유 포지션 시장가 청산 (하루를 넘기지 않음 → 스왑·주말 갭 없음)
+6. 신호 강도 (v2): 돌파 봉 종가가 전일 고가 위(매수) / 전일 저가 아래(매도)면 강한 신호 가중치 1.5, 아니면 0.5
 
 자금관리 (마틴 3단계, 날짜를 넘어 이어짐):
-- 1단계 lot = 사이클 시작 잔고 × RISK_PCT% / (손절폭 × 100온스), 0.01 단위 내림, 최소 0.01
-- 손절하면 다음 거래 ×2, 최대 3단계 (1·2·4배). 익절 또는 3단계 손절 후 1단계로 돌아감
+- lot = 사이클 시작 잔고 × RISK_PCT% × 가중치 × 2^(단계-1) / (U × 100온스), 0.01 단위 내림, 최소 0.01
+  (손절폭이 아니라 U로 나눔 -> 손절되면 그 금액의 75%를 잃음. 사이클 시작 잔고는 1단계 진입 때 잔고)
+- 결과가 0 이하면 다음 거래 ×2, 최대 3단계 (1·2·4배). 플러스 또는 3단계 패배 후 1단계로 돌아감
 - 단계는 이 스크립트(매직 넘버)가 청산한 MT5 거래내역으로 계산 → 껐다 켜도 이어짐
+
+v2 백테스트 (backtests/asia_v2.py, 실제 틱, 2022-01 ~ 2026-10, 1만 달러 시작):
+- v1 18,645$ / 낙폭 16.7% / 최악의 달 -12.5%  ->  v2 34,104$ / 16.1% / -7.7%, 월평균 +2.29%, 다섯 해 모두 v1보다 좋음
+- 승률 51.6% (강한 57.1% / 약한 47.5%, 강한 신호가 해마다 더 높음), 최장 6연패
+- 최소 lot 0.01 때문에 잔고가 작으면 가중치 효과가 없음 (ATR 78$ 기준 강한 신호 0.02 lot은 잔고 약 5,200$부터)
 
 백테스트 (실제 틱 체결, 진입 시 실제 스프레드 평균 0.20$, 2022-01 ~ 2026-10, 580건):
 - 고정 lot 거래당 R: 2022~24 +0.060 / 2025~26H1 +0.198 / 숨겨 둔 검증구간 2026-07~10 +0.208
@@ -57,8 +64,10 @@ RANGE_UNTIL = "09:00"      # 이 시각 전에 시작한 봉까지 레인지
 ENTRY_UNTIL = "18:00"      # 이 시각 전에 시작한 봉의 돌파만 진입 (마지막 17:55 봉)
 EXIT_AT = "23:00"          # 보유 포지션 시장가 청산
 MIN_RANGE_BARS = 50        # 레인지 봉이 이보다 적으면 (휴장일 등) 그날 거래 없음
-ATR_MULT = 0.5             # 손절 = 익절 = 일봉 ATR(14) × 0.5
-TP_RATIO = 1.0             # 익절 = 손절 × 1.0
+ATR_MULT = 0.5             # 기준폭 U = 일봉 ATR(14) × 0.5
+TP_RATIO = 1.0             # 익절 = U × 1.0
+SL_RATIO = 0.75            # 손절 = U × 0.75
+W_STRONG, W_WEAK = 1.5, 0.5    # 신호 강도 가중치 (전일 고가/저가 돌파면 강함)
 MOM_DAYS = 5               # 모멘텀: 전일 종가 vs (MOM_DAYS+1)거래일 전 종가
 # 자금관리
 RISK_PCT = 1.0             # 1단계 lot = 사이클 시작 잔고의 1% / 손절폭
@@ -83,7 +92,8 @@ FIELDS = ["date", "signal_bar", "side", "level", "lot", "range_hi", "range_lo", 
 
 STRATEGY = "아시아 3마틴"
 STRATEGY_DESC = (f"아시아 레인지({RANGE_FROM}~{RANGE_UNTIL}) 돌파 {RANGE_UNTIL}~{ENTRY_UNTIL} + {MOM_DAYS}일 모멘텀, "
-                 f"손절=익절=일봉ATR×{ATR_MULT}, {EXIT_AT} 청산, 마틴 {MARTIN_STEPS}단계")
+                 f"U=일봉ATR×{ATR_MULT}, 익절 {TP_RATIO:g}U / 손절 {SL_RATIO:g}U, 전일 고저 돌파면 가중치 {W_STRONG:g} "
+                 f"아니면 {W_WEAK:g}, {EXIT_AT} 청산, 마틴 {MARTIN_STEPS}단계 (v2)")
 
 log = logging.getLogger("asia")
 tg = None
@@ -173,17 +183,17 @@ def rates(tf, n):
 
 
 def daily_features(today):
-    """오늘 시작 시점에 알 수 있는 값: (일봉 ATR14 전일까지, 5일 모멘텀 방향 +1/-1/0)"""
+    """오늘 시작 시점에 알 수 있는 값: (일봉 ATR14 전일까지, 5일 모멘텀 방향 +1/-1/0, 전일 고가, 전일 저가)"""
     d1 = rates(mt5.TIMEFRAME_D1, 400)
     if d1 is None or len(d1) < 30:
-        return None, 0
+        return None, 0, None, None
     d1 = d1[d1.time.dt.date < today].reset_index(drop=True)   # 완성된 전일까지
     pc = d1.close.shift()
     tr = np.maximum(d1.high - d1.low, np.maximum((d1.high - pc).abs(), (d1.low - pc).abs()))
     tr.iat[0] = d1.high.iat[0] - d1.low.iat[0]
     atr = float(tr.ewm(alpha=1 / 14, adjust=False).mean().iat[-1])
     mom = int(np.sign(d1.close.iat[-1] - d1.close.iat[-1 - MOM_DAYS]))
-    return atr, mom
+    return atr, mom, float(d1.high.iat[-1]), float(d1.low.iat[-1])
 
 
 def asian_range(m5, today):
@@ -233,18 +243,17 @@ def round_lot(x):
     return round(min(max(lot, info.volume_min), info.volume_max), 2)
 
 
-def plan_lot(level, sl_usd):
-    """(lot, 1단계 lot, 실제 리스크 %). 1단계 lot은 사이클 시작 때 정해서 bot_state.json에 보관"""
+def plan_lot(level, u, w, save=True):
+    """(lot, 사이클 시작 잔고, 손절 시 잔고 대비 %). 사이클 시작 잔고는 1단계 진입 때 bot_state.json에 보관"""
     st = load_json(BOT_JSON)
     bal = mt5.account_info().balance
-    if level == 0 or "cycle_base" not in st:
-        base = round_lot(bal * RISK_PCT / 100 / (sl_usd * CONTRACT))
-        st["cycle_base"] = base
+    cyc = bal if level == 0 or "cycle_bal" not in st else st["cycle_bal"]
+    if save and cyc != st.get("cycle_bal"):
+        st["cycle_bal"] = cyc
         save_json(BOT_JSON, st)
-    base = st["cycle_base"]
-    lot = round(base * MARTIN_MULT ** level, 2)
-    risk = lot * sl_usd * CONTRACT / bal * 100 if bal > 0 else 0
-    return lot, base, risk
+    lot = round_lot(cyc * RISK_PCT / 100 * w * MARTIN_MULT ** level / (u * CONTRACT))
+    risk = lot * u * SL_RATIO * CONTRACT / bal * 100 if bal > 0 else 0
+    return lot, cyc, risk
 
 
 def risk_block(now, lot):
@@ -280,7 +289,7 @@ def filling_mode():
     return mt5.ORDER_FILLING_RETURN
 
 
-def place(side, lot, level, sl_usd, info_row):
+def place(side, lot, level, u, w, info_row):
     info, tick = mt5.symbol_info(SYMBOL), mt5.symbol_info_tick(SYMBOL)
     otype = mt5.ORDER_TYPE_BUY if side == 1 else mt5.ORDER_TYPE_SELL
     price = tick.ask if side == 1 else tick.bid
@@ -290,7 +299,7 @@ def place(side, lot, level, sl_usd, info_row):
         log.warning(f"증거금 부족으로 진입 안 함: 필요 {margin}, 여유 {free:.2f} ({lot} lot)")
         send(f"⚠️ 증거금 부족으로 진입 안 함\n필요 {margin} / 여유 {free:,.2f} ({lot} lot)")
         return None
-    tp_usd = sl_usd * TP_RATIO
+    sl_usd, tp_usd = u * SL_RATIO, u * TP_RATIO
     sl = round(price - sl_usd * side, info.digits)
     tp = round(price + tp_usd * side, info.digits)
     req = {
@@ -308,11 +317,13 @@ def place(side, lot, level, sl_usd, info_row):
     row = dict(info_row, side="BUY" if side == 1 else "SELL", level=level + 1, lot=lot, sl_usd=round(sl_usd, 2),
                order_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"), fill_price=fill,
                spread=round(tick.ask - tick.bid, 3), sl=sl, tp=tp, ticket=res.order)
-    log.info(f"진입 {row['side']} {lot}lot (마틴 {level + 1}단계) @ {fill}, SL {sl}, TP {tp} (폭 {sl_usd:.2f}$)")
-    send(f"{'🟢 매수' if side == 1 else '🔴 매도'} 진입 {lot} lot (마틴 {level + 1}/{MARTIN_STEPS}단계)\n"
+    strength = "강한 신호" if w == W_STRONG else "약한 신호"
+    log.info(f"진입 {row['side']} {lot}lot (마틴 {level + 1}단계, {strength} x{w:g}) @ {fill}, SL {sl}, TP {tp} "
+             f"(손절 {sl_usd:.2f}$ / 익절 {tp_usd:.2f}$)")
+    send(f"{'🟢 매수' if side == 1 else '🔴 매도'} 진입 {lot} lot (마틴 {level + 1}/{MARTIN_STEPS}단계, {strength} x{w:g})\n"
          f"레인지 {info_row['range_lo']} ~ {info_row['range_hi']} 돌파, 일봉 ATR {info_row['daily_atr']}\n"
          f"가격 {fill} | SL {sl} | TP {tp}\n"
-         f"최대 손실 / 목표 이익 약 {sl_usd * lot * CONTRACT:,.0f}$\n"
+         f"최대 손실 약 {sl_usd * lot * CONTRACT:,.0f}$ / 목표 이익 약 {tp_usd * lot * CONTRACT:,.0f}$\n"
          f"{account_line()}\n{summary_line(clock.now(), MAGIC, SYMBOL)}")
     return row
 
@@ -386,14 +397,17 @@ def main():
     clock.update()
 
     now = clock.now()
-    datr, mom = daily_features(now.date())
+    datr, mom, _, _ = daily_features(now.date())
     lvl = martin_level()
-    msg = f"오늘 일봉 ATR {datr:.2f}$ → 손절/익절 폭 {datr * ATR_MULT:.2f}$, 5일 모멘텀 {'+' if mom > 0 else '-' if mom < 0 else '0'}" \
+    msg = (f"오늘 일봉 ATR {datr:.2f}$ → U {datr * ATR_MULT:.2f}$ (손절 {datr * ATR_MULT * SL_RATIO:.2f}$ / "
+           f"익절 {datr * ATR_MULT * TP_RATIO:.2f}$), 5일 모멘텀 {'+' if mom > 0 else '-' if mom < 0 else '0'}") \
         if datr else "일봉 데이터 부족"
     if datr:
-        lot, base, risk = plan_lot(lvl, datr * ATR_MULT) if lvl == 0 else (None, None, None)
-        if lot:
-            msg += f"\n1단계 lot {lot} (실제 리스크 잔고의 {risk:.1f}%{' — 최소 lot 때문에 목표 1%보다 큼' if risk > RISK_PCT * 1.5 else ''})"
+        for name, w in (("강한 신호", W_STRONG), ("약한 신호", W_WEAK)):
+            lot, _, risk = plan_lot(lvl, datr * ATR_MULT, w, save=False)
+            aim = RISK_PCT * w * SL_RATIO * MARTIN_MULT ** lvl
+            msg += (f"\n{lvl + 1}단계 {name} {lot} lot (손절 시 잔고의 {risk:.2f}%, 목표 {aim:.2f}%"
+                    f"{' — 최소 lot 때문에 큼' if risk > aim * 1.3 else ''})")
     log.info(f"시작: 계좌 {acc.login} ({acc.server}, {kind}) 잔고 {acc.balance}, 다음 진입 마틴 {lvl + 1}단계. {msg}"
              f"{' [DRY-RUN]' if args.dry_run else ''}")
     send(f"▶️ 자동매매 시작 ({kind} {acc.login})\n전략: {STRATEGY_DESC}\n다음 진입 마틴 {lvl + 1}단계\n{msg}\n"
@@ -451,8 +465,8 @@ def main():
                 time.sleep(POLL_SEC)
                 continue
             if day_info.get("date") != today:
-                datr, mom = daily_features(today)
-                day_info = {"date": today, "atr": datr, "mom": mom}
+                datr, mom, ph, pl = daily_features(today)
+                day_info = {"date": today, "atr": datr, "mom": mom, "ph": ph, "pl": pl}
             rng = asian_range(m5, today)
             if rng is None or not day_info["atr"]:
                 log.info("레인지 봉 부족 또는 일봉 ATR 없음 -> 오늘 거래 없음")
@@ -467,30 +481,33 @@ def main():
             bar, side, close = brk
             st["done_date"] = str(today)          # 첫 돌파가 나오면 결과와 상관없이 오늘은 끝
             save_json(BOT_JSON, st)
-            sl_usd = day_info["atr"] * ATR_MULT
+            u = day_info["atr"] * ATR_MULT
+            strong = close > day_info["ph"] if side == 1 else close < day_info["pl"]
+            w = W_STRONG if strong else W_WEAK
             desc = (f"봉 {bar:%m-%d %H:%M} 종가 {close} {'상향' if side == 1 else '하향'} 돌파 "
-                    f"(레인지 {lo}~{hi}, {nbars}봉), 5일 모멘텀 {day_info['mom']:+d}, 일봉 ATR {day_info['atr']:.2f}")
+                    f"(레인지 {lo}~{hi}, {nbars}봉), 5일 모멘텀 {day_info['mom']:+d}, 일봉 ATR {day_info['atr']:.2f}, "
+                    f"전일 고/저 {day_info['ph']}/{day_info['pl']} -> {'강한' if strong else '약한'} 신호 x{w:g}")
             if bar != last_bar:
                 log.info(f"{desc} -> 첫 돌파가 이미 지난 봉이라 (재시작 등) 오늘은 진입 안 함")
             elif side != day_info["mom"]:
                 log.info(f"{desc} -> 모멘텀과 반대라 오늘은 거래 없음")
             elif args.dry_run:
                 lvl = martin_level()
-                lot, base, risk = plan_lot(lvl, sl_usd)
+                lot, _, risk = plan_lot(lvl, u, w, save=False)
                 log.info(f"{desc} -> [DRY-RUN] {'매수' if side == 1 else '매도'} {lot} lot (마틴 {lvl + 1}단계, 리스크 {risk:.1f}%)")
             elif my_positions():
                 log.info(f"{desc} -> 포지션 보유 중이라 진입 안 함")
             else:
                 lvl = martin_level()
-                lot, base, risk = plan_lot(lvl, sl_usd)
+                lot, _, risk = plan_lot(lvl, u, w)
                 if reason := risk_block(now, lot):
                     log.info(f"{desc} -> 안전장치: {reason}")
                     send(f"⛔ 안전장치: {reason}\n오늘은 진입하지 않습니다.")
                 else:
-                    log.info(f"{desc} -> 진입")
+                    log.info(f"{desc} -> 진입 (손절 시 잔고의 {risk:.2f}%)")
                     info_row = {"date": str(today), "signal_bar": bar.strftime("%Y-%m-%d %H:%M"), "range_hi": hi,
                                 "range_lo": lo, "daily_atr": round(day_info["atr"], 2), "signal_price": close}
-                    open_row = place(side, lot, lvl, sl_usd, info_row)
+                    open_row = place(side, lot, lvl, u, w, info_row)
             time.sleep(POLL_SEC)
     except KeyboardInterrupt:
         log.info("사용자 종료 (열린 포지션은 서버 SL/TP로 관리되지만 23:00 청산은 스크립트가 켜져 있어야 함)")

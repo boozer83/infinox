@@ -1,7 +1,7 @@
 """수익률 계산과 일/주/월 리포트 (MT5 서버 거래내역 기준)
 
 - 손익: 이 전략(매직 넘버) 거래의 실현손익 합계 (수수료/스왑 포함, 열린 포지션 평가손익 제외)
-- 수익률: 손익 / 기간 시작 시점 잔고
+- 수익률: 손익 / (기간 시작 시점 잔고 + 기간 중 입금액)  (입금이 있어도 % 가 부풀지 않게. 출금은 빼지 않음)
   기간 시작 잔고 = 현재 잔고 - 그 이후 계좌의 모든 잔고 변동 (입출금 포함)
 - 기간은 서버시간 기준: 일 = 00:00, 주 = 월요일 00:00, 월 = 1일 00:00
 
@@ -59,6 +59,12 @@ def balance_at(start):
     return mt5.account_info().balance - change
 
 
+def deposits(start, end):
+    """start ~ end 입금 합계 (출금 제외)"""
+    deals = mt5.history_deals_get(epoch(start), epoch(end)) or ()
+    return sum(d.profit for d in deals if d.type == mt5.DEAL_TYPE_BALANCE and d.profit > 0)
+
+
 def stats(start, end, magic, symbol):
     deals = mt5.history_deals_get(epoch(start), epoch(end)) or ()
     mine = [d for d in deals if d.magic == magic and d.symbol == symbol]
@@ -72,9 +78,10 @@ def stats(start, end, magic, symbol):
     levels = [int(d.comment.rsplit("L", 1)[1]) for d in mine
               if d.entry == mt5.DEAL_ENTRY_IN and d.comment.rsplit("L", 1)[-1].isdigit()]
     b0 = balance_at(start)
+    dep = deposits(start, end)
     return {
         "trades": len(closes), "wins": sum(p > 0 for p in closed_pnl), "pnl": pnl,
-        "pct": pnl / b0 * 100 if b0 > 0 else 0.0, "start_balance": b0,
+        "pct": pnl / (b0 + dep) * 100 if b0 + dep > 0 else 0.0, "start_balance": b0, "deposit": dep,
         "end_balance": balance_at(end),
         "max_level": max(levels) if levels else None,
     }

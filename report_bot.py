@@ -5,7 +5,7 @@
 - 금요일: 주간 리포트 추가 = 지난 금요일 21:00 이후
 - 그 달 마지막 평일: 월간 리포트 추가 = 지난달 마지막 평일 21:00 이후
 기간이 리포트 시각끼리 이어져서 빠지는 거래가 없음 (금요일 밤~토요일 새벽 거래는 다음 월요일 일일·다음 주 주간에 들어감)
-손익 계산은 reports.stats와 같음 (실현손익, 수익률 = 손익 / 기간 시작 잔고). MT5 거래내역은 서버시간이라 한국시간을 바꿔서 조회
+손익 계산은 reports.stats와 같음 (실현손익, 수익률 = 손익 / (기간 시작 잔고 + 기간 중 입금)). MT5 거래내역은 서버시간이라 한국시간을 바꿔서 조회
 
 기록: report_log/ (실계좌는 report_live_log/) — state.json(마지막으로 보낸 날짜), events.log
 
@@ -28,7 +28,7 @@ import demo_trader
 import trend_trader
 from config import SYMBOL
 from demo_trader import account_kind, check_demo, connect
-from reports import ServerClock, balance_at, last_weekday_of_month, stats
+from reports import ServerClock, balance_at, deposits, last_weekday_of_month, stats
 from telegram_notify import Notifier
 
 KST = timezone(timedelta(hours=9))
@@ -70,7 +70,7 @@ def section(title, start, end, off):
     """start ~ end(한국시간) 전략별 손익 블록"""
     s = (start - timedelta(hours=9 - off)).replace(tzinfo=None)
     e = (end - timedelta(hours=9 - off)).replace(tzinfo=None)
-    b0, b1 = balance_at(s), balance_at(e)
+    b0, b1, dep = balance_at(s), balance_at(e), deposits(s, e)
     lines = [f"{title} ({start:%m/%d %H:%M} ~ {end:%m/%d %H:%M})"]
     total = 0.0
     for name, magic in STRATS:
@@ -79,8 +79,8 @@ def section(title, start, end, off):
         n, w = st["trades"], st["wins"]
         trades = f"{n}건 (익절 {w} / 손절 {n - w}, 승률 {w / n * 100:.0f}%)" if n else "거래 없음"
         lines.append(f"• {name}: {st['pct']:+.2f}% ({st['pnl']:+,.2f}$) · {trades}")
-    lines.append(f"합계 {total / b0 * 100 if b0 > 0 else 0:+.2f}% ({total:+,.2f}$)")
-    lines.append(f"잔고 {b0:,.2f} → {b1:,.2f}")
+    lines.append(f"합계 {total / (b0 + dep) * 100 if b0 + dep > 0 else 0:+.2f}% ({total:+,.2f}$)")
+    lines.append(f"잔고 {b0:,.2f} → {b1:,.2f}" + (f" (입금 +{dep:,.2f}$ 포함, 수익률은 입금액까지 기준)" if dep else ""))
     return "\n".join(lines)
 
 

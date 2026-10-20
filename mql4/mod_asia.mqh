@@ -1,10 +1,11 @@
-// 아시아 3마틴(asia_breakout_trader.py, 아시아 레인지 돌파 + 마틴 3단계) 전략 모듈. Infinox_Bots.mq4가 include. 시각은 모두 서버시간
+﻿// 아시아 3마틴(asia_breakout_trader.py, 아시아 레인지 돌파 + 마틴 3단계) 전략 모듈. Infinox_Bots.mq4가 include. 시각은 모두 서버시간
 // 1. 아시아 레인지 = 오늘 01:05~08:55 5분봉 최고가 / 최저가 (50봉 미만이면 그날 거래 없음)
 // 2. 09:00~17:55에 시작한 5분봉 종가가 레인지 위 → 매수, 아래 → 매도. 그날 첫 돌파만 봄
 // 3. 5일 모멘텀: 전일 종가 > 6거래일 전 종가면 매수만, 작으면 매도만
-// 4. 손절 = 익절 = 0.5 x 일봉 ATR(14, 전일까지). 23:00에 보유 포지션 청산
-// 자금관리: 1단계 lot = 사이클 시작 잔고 x AsiaRiskPct% / (손절폭 x 100), 손절이면 x2, 최대 3단계 (1·2·4배)
-// 상태: MQL4\Files\infinox_asia_state.txt (오늘 처리 여부, 마틴 단계, 1단계 lot, 최고 잔고)
+// 4. 기준폭 U = 0.5 x 일봉 ATR(14, 전일까지). 익절 = U, 손절 = 0.75 x U (v2). 23:00에 보유 포지션 청산
+// 5. 신호 강도 (v2): 돌파 봉 종가가 전일 고가 위(매수) / 전일 저가 아래(매도)면 가중치 1.5, 아니면 0.5
+// 자금관리: lot = 사이클 시작 잔고 x AsiaRiskPct% x 가중치 x 2^(단계-1) / (U x 100), 결과 0 이하면 다음 단계, 최대 3단계 (1·2·4배)
+// 상태: MQL4\Files\infinox_asia_state.txt (오늘 처리 여부, 마틴 단계, 사이클 시작 잔고, 최고 잔고)
 
 #define A_RANGE_FROM 65              // 01:05
 #define A_RANGE_UNTIL 540            // 09:00
@@ -12,6 +13,10 @@
 #define A_EXIT_AT 1380               // 23:00
 #define A_MIN_RANGE_BARS 50
 #define A_ATR_MULT 0.5
+#define A_TP_RATIO 1.0
+#define A_SL_RATIO 0.75
+#define A_W_STRONG 1.5
+#define A_W_WEAK 0.5
 #define A_MOM_DAYS 5
 #define A_MARTIN_STEPS 3
 #define A_ACCOUNT_STOP_PCT 50.0
@@ -28,11 +33,13 @@ int      a_openSide = 0;
 datetime a_featDay = 0;
 double   a_datr = 0;
 int      a_mom = 0;
+double   a_ph = 0, a_pl = 0;         // 전일 고가 / 저가
 
 string A_Desc()
 {
-   return StringFormat("아시아 레인지(01:05~09:00) 돌파 09:00~18:00 + %d일 모멘텀, 손절=익절=일봉ATR×%g, 23:00 청산, 마틴 %d단계",
-                       A_MOM_DAYS, A_ATR_MULT, A_MARTIN_STEPS);
+   return StringFormat("아시아 레인지(01:05~09:00) 돌파 09:00~18:00 + %d일 모멘텀, U=일봉ATR×%g, 익절 %gU / 손절 %gU, "
+                       "전일 고저 돌파면 가중치 %g 아니면 %g, 23:00 청산, 마틴 %d단계 (v2)",
+                       A_MOM_DAYS, A_ATR_MULT, A_TP_RATIO, A_SL_RATIO, A_W_STRONG, A_W_WEAK, A_MARTIN_STEPS);
 }
 
 int A_Level() { return (int)StringToInteger(StGet(A_ST, "level", "0")); }
@@ -62,24 +69,22 @@ void A_DailyFeatures(datetime today)
    }
    Atr(h, l, c, n, 14, a);
    a_datr = a[n - 1];
+   a_ph = h[n - 1];
+   a_pl = l[n - 1];
    double d = c[n - 1] - c[n - 1 - A_MOM_DAYS];
    a_mom = d > 0 ? 1 : d < 0 ? -1 : 0;
 }
 
-// 1단계 lot은 사이클 시작 때 정해서 상태 파일에 보관. 반환: 이번 lot
-double A_PlanLot(int level, double slUsd, double &base, double &risk)
+// 사이클 시작 잔고(1단계 진입 때)는 상태 파일에 보관. 반환: 이번 lot, risk = 손절 시 잔고 대비 %
+double A_PlanLot(int level, double u, double w, bool save, double &risk)
 {
    double bal = AccountBalance();
-   string saved = StGet(A_ST, "cycle_base", "");
-   if (level == 0 || saved == "")
-   {
-      base = FloorLot(bal * AsiaRiskPct / 100 / (slUsd * Contract()));
-      StSet(A_ST, "cycle_base", DoubleToString(base, 2));
-   }
-   else
-      base = StringToDouble(saved);
-   double lot = NormalizeDouble(base * MathPow(2, level), 2);
-   risk = bal > 0 ? lot * slUsd * Contract() / bal * 100 : 0;
+   string saved = StGet(A_ST, "cycle_bal", "");
+   double cyc = level == 0 || saved == "" ? bal : StringToDouble(saved);
+   if (save)
+      StSet(A_ST, "cycle_bal", DoubleToString(cyc, 2));
+   double lot = FloorLot(cyc * AsiaRiskPct / 100 * w * MathPow(2, level) / (u * Contract()));
+   risk = bal > 0 ? lot * u * A_SL_RATIO * Contract() / bal * 100 : 0;
    return lot;
 }
 
@@ -153,9 +158,13 @@ void A_OnBar(datetime now, datetime bar)
    if (side == 0)
       return;
    StSet(A_ST, "done_date", todayStr);   // 첫 돌파가 나오면 결과와 상관없이 오늘은 끝
-   double slUsd = a_datr * A_ATR_MULT;
-   string desc = StringFormat("[아시아 3마틴] 봉 %s 종가 %.2f %s 돌파 (레인지 %.2f~%.2f, %d봉), 5일 모멘텀 %+d, 일봉 ATR %.2f",
-                              TimeToString(bt, TIME_DATE | TIME_MINUTES), close, side == 1 ? "상향" : "하향", lo, hi, nr, a_mom, a_datr);
+   double u = a_datr * A_ATR_MULT, slUsd = u * A_SL_RATIO, tpUsd = u * A_TP_RATIO;
+   bool strong = side == 1 ? close > a_ph : close < a_pl;
+   double w = strong ? A_W_STRONG : A_W_WEAK;
+   string desc = StringFormat("[아시아 3마틴] 봉 %s 종가 %.2f %s 돌파 (레인지 %.2f~%.2f, %d봉), 5일 모멘텀 %+d, 일봉 ATR %.2f, "
+                              "전일 고/저 %.2f/%.2f -> %s 신호 x%g",
+                              TimeToString(bt, TIME_DATE | TIME_MINUTES), close, side == 1 ? "상향" : "하향", lo, hi, nr, a_mom, a_datr,
+                              a_ph, a_pl, strong ? "강한" : "약한", w);
    if (bt != bar)
    {
       Print(desc, " -> 첫 돌파가 이미 지난 봉이라 (재시작 등) 오늘은 진입 안 함");
@@ -172,8 +181,8 @@ void A_OnBar(datetime now, datetime bar)
       return;
    }
    int lvl = A_Level();
-   double base, risk;
-   double lot = A_PlanLot(lvl, slUsd, base, risk);
+   double risk;
+   double lot = A_PlanLot(lvl, u, w, true, risk);
    string reason = RiskBlock(a_tag, A_ST, A_ACCOUNT_STOP_PCT);
    if (reason == "" && lot > AsiaMaxLot)
       reason = StringFormat("진입 lot %.2f이 최대 lot %g을 넘음", lot, AsiaMaxLot);
@@ -187,7 +196,7 @@ void A_OnBar(datetime now, datetime bar)
    if (!MarginOk(a_tag, lot))
       return;
    double fill;
-   int tk = OpenMarket(a_tag, side, lot, slUsd, slUsd, MagicAsia, StringFormat("asia brk L%d", lvl), A_SLIP_USD, fill);
+   int tk = OpenMarket(a_tag, side, lot, slUsd, tpUsd, MagicAsia, StringFormat("asia brk L%d", lvl), A_SLIP_USD, fill);
    if (tk < 0)
       return;
    a_ticket = tk;
@@ -195,10 +204,11 @@ void A_OnBar(datetime now, datetime bar)
    a_openPx = fill;
    a_openSide = side;
    a_timeExit = false;
-   Send(a_tag, StringFormat("%s 진입 %.2f lot (마틴 %d/%d단계)\n레인지 %.2f ~ %.2f 돌파, 일봉 ATR %.2f\n가격 %.2f | SL %.2f | TP %.2f\n"
-                            "최대 손실 / 목표 이익 약 %.0f$ (잔고의 %.1f%%)\n%s\n%s",
-                            side == 1 ? "🟢 매수" : "🔴 매도", lot, lvl + 1, A_MARTIN_STEPS, lo, hi, a_datr, fill, fill - side * slUsd,
-                            fill + side * slUsd, slUsd * lot * Contract(), risk, AccountLine(), SummaryLine(MagicAsia)));
+   Send(a_tag, StringFormat("%s 진입 %.2f lot (마틴 %d/%d단계, %s 신호 x%g)\n레인지 %.2f ~ %.2f 돌파, 일봉 ATR %.2f\n가격 %.2f | SL %.2f | TP %.2f\n"
+                            "최대 손실 약 %.0f$ (잔고의 %.2f%%) / 목표 이익 약 %.0f$\n%s\n%s",
+                            side == 1 ? "🟢 매수" : "🔴 매도", lot, lvl + 1, A_MARTIN_STEPS, strong ? "강한" : "약한", w, lo, hi, a_datr,
+                            fill, fill - side * slUsd, fill + side * tpUsd, slUsd * lot * Contract(), risk, tpUsd * lot * Contract(),
+                            AccountLine(), SummaryLine(MagicAsia)));
 }
 
 //---------------------------------------------------------------- Infinox_Bots.mq4에서 부름
@@ -222,12 +232,18 @@ string A_StartText()
    string s = StringFormat("전략: %s\n다음 진입 마틴 %d단계", A_Desc(), lvl + 1);
    if (a_datr <= 0)
       return s + "\n일봉 데이터 부족";
-   double slUsd = a_datr * A_ATR_MULT;
-   s += StringFormat("\n오늘 일봉 ATR %.2f$ → 손절/익절 폭 %.2f$, 5일 모멘텀 %s", a_datr, slUsd, a_mom > 0 ? "+" : a_mom < 0 ? "-" : "0");
-   double base, risk;
-   double lot = A_PlanLot(lvl, slUsd, base, risk);
-   return s + StringFormat("\n이번 lot %.2f (실제 리스크 잔고의 %.1f%%%s)", lot, risk,
-                           lvl == 0 && risk > AsiaRiskPct * 1.5 ? " — 최소 lot 때문에 목표보다 큼" : "");
+   double u = a_datr * A_ATR_MULT;
+   s += StringFormat("\n오늘 일봉 ATR %.2f$ → U %.2f$ (손절 %.2f$ / 익절 %.2f$), 5일 모멘텀 %s", a_datr, u, u * A_SL_RATIO,
+                     u * A_TP_RATIO, a_mom > 0 ? "+" : a_mom < 0 ? "-" : "0");
+   for (int k = 0; k < 2; k++)
+   {
+      double w = k == 0 ? A_W_STRONG : A_W_WEAK, risk;
+      double lot = A_PlanLot(lvl, u, w, false, risk);
+      double aim = AsiaRiskPct * w * A_SL_RATIO * MathPow(2, lvl);
+      s += StringFormat("\n%d단계 %s 신호 %.2f lot (손절 시 잔고의 %.2f%%, 목표 %.2f%%%s)", lvl + 1, k == 0 ? "강한" : "약한", lot, risk,
+                        aim, risk > aim * 1.3 ? " — 최소 lot 때문에 큼" : "");
+   }
+   return s;
 }
 
 // 꺼져 있어도 이미 열린 포지션 관리(청산 기록, 23:00 청산)는 계속

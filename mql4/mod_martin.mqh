@@ -1,11 +1,13 @@
-// SAR 단타(demo_trader.py, 이전 이름 "마틴") 전략 모듈. Infinox_Bots.mq4가 include
+﻿// SAR 단타(demo_trader.py, 이전 이름 "마틴") 전략 모듈. Infinox_Bots.mq4가 include
 // 규칙은 demo_trader.py와 같음 (마틴 꺼짐 = 그날 시작 잔고 1,000$당 0.05 lot 고정):
 // - 5분봉 SAR(0.02, 0.2) 전환 봉 완성 시 진입. 매수: RSI(14) > 50 이고 완성 1시간봉 SAR 상승 (매도는 반대)
 // - 손절 7.5$ / 익절 3$ 서버 설정, 포지션 1개
 // - 금요일 22:30 이후 진입 안 함, 23:30 청산 / 매일 15:00~21:00 진입 안 함 (서버시간)
 // - 오늘 완성 1시간봉 SAR 전환 3번 이상이면 진입 안 함
 // - 5분봉 ATR(14) 2.5$ 미만, 또는 최근 20일 5분봉 ATR 중앙값의 2배 초과면 진입 안 함
-// - 최근 200건(실제+가상) 승률 71.4% 미만이면 가상 진입만
+// - 과열 거르기: 신호 봉 종가가 뚫은 SAR 값에서 ATR x 0.8 넘게 갔거나 새 SAR 점에서 ATR x 2.8 넘게 떨어져 있으면 진입 안 함
+// - 보유 중 5분봉 SAR이 반대로 전환되면(완성 봉) 시장가 청산 (반대 콩 청산, 2026-10-21 추가)
+// - 승률 쉬기(최근 200건 71.4% 미만이면 가상 진입만)는 꺼 둠 (M_WINRATE_PAUSE). 승률은 기록만
 // - 계좌 손실 한도 50% (최고 잔고 대비 평가금)
 // 상태: MQL4\Files\infinox_martin_state.txt (승률 기록, 가상 포지션, 최고 잔고)
 
@@ -20,6 +22,10 @@
 #define M_MAX_ATR_MULT 2.0
 #define M_ATR_REF_BARS 5520          // 20일 x 276
 #define M_ATR_REF_MIN 2000
+#define M_MAX_EXT 0.8
+#define M_MAX_RISK 2.8
+#define M_WINRATE_PAUSE false
+#define M_SAR_EXIT true
 #define M_WINRATE_N 200
 #define M_WINRATE_MIN 71.4
 #define M_ACCOUNT_STOP_PCT 50.0
@@ -32,6 +38,7 @@ datetime m_lastBar = 0;
 datetime m_lastCloseTry = 0;
 datetime m_riskNotified = 0;
 bool     m_fridayClose = false;
+bool     m_sarClose = false;
 string   m_wr = "";                  // 최근 결과 '1'(익절) / '0'(손절)
 int      m_vside = 0;                // 가상 포지션 방향
 double   m_ventry = 0;
@@ -41,8 +48,8 @@ int      m_openSide = 0;
 string M_Desc()
 {
    return StringFormat("5분봉 SAR 전환 + RSI50 + 1시간봉 SAR, 익절 %g$ / 손절 %g$, 고정 lot (1,000$당 %g lot, 마틴 없음), "
-                       "5분봉 ATR %g$ 미만 쉼, ATR 20일 중앙값 %g배 초과 쉼, 최근 %d건 승률 %g%% 미만 쉼",
-                       M_TP_USD, M_SL_USD, LotPer1000, M_MIN_ATR, M_MAX_ATR_MULT, M_WINRATE_N, M_WINRATE_MIN);
+                       "5분봉 ATR %g$ 미만 쉼, ATR 20일 중앙값 %g배 초과 쉼, 과열 거르기(%g / %g ATR), 5분봉 SAR 반대 전환이면 청산, 승률 쉬기 꺼짐",
+                       M_TP_USD, M_SL_USD, LotPer1000, M_MIN_ATR, M_MAX_ATR_MULT, M_MAX_EXT, M_MAX_RISK);
 }
 
 double M_BaseLot() { return FloorLot((AccountBalance() - TodayTradePnl()) / 1000 * LotPer1000); }
@@ -67,6 +74,8 @@ double M_WinRate(int &n)
 
 bool M_IsPaused()
 {
+   if (!M_WINRATE_PAUSE)
+      return false;
    int n;
    double r = M_WinRate(n);
    return n >= M_WINRATE_N && r < M_WINRATE_MIN;
@@ -130,6 +139,7 @@ void M_Place(int side, double lot, datetime bar, double signalPx)
    m_openPx = fill;
    m_openSide = side;
    m_fridayClose = false;
+   m_sarClose = false;
    Send(m_tag, StringFormat("%s 진입 %.2f lot (고정 lot)\n가격 %.2f | SL %.2f | TP %.2f (신호봉 %s 종가 %.2f)\n"
                             "최대 손실 약 %.0f$ / 목표 이익 약 %.0f$\n%s\n%s",
                             side == 1 ? "🟢 매수" : "🔴 매도", lot, fill, fill - side * M_SL_USD, fill + side * M_TP_USD,
@@ -147,9 +157,11 @@ void M_CheckClosed()
       return;
    if (m_fridayClose)
       reason = "FRIDAY";
+   else if (m_sarClose)
+      reason = "SAR";
    double bal = AccountBalance();
    double pct = bal - profit > 0 ? profit / (bal - profit) * 100 : 0;
-   string icon = reason == "TP" ? "✅ 익절" : reason == "SL" ? "❌ 손절" : reason == "FRIDAY" ? "⏹ 금요일 청산" : "⏹ 청산";
+   string icon = reason == "TP" ? "✅ 익절" : reason == "SL" ? "❌ 손절" : reason == "FRIDAY" ? "⏹ 금요일 청산" : reason == "SAR" ? "↩️ 반대 콩 청산" : "⏹ 청산";
    Send(m_tag, StringFormat("%s %s %.2f lot\n%.2f → %.2f\n손익 %+.2f$ (%+.2f%%)\n다음 진입 고정 lot (%.2f lot)\n%s\n%s",
                             icon, m_openSide == 1 ? "BUY" : "SELL", m_openLot, m_openPx, px, profit, pct, M_LotFor(M_BaseLot()),
                             AccountLine(), SummaryLine(MagicMartin)));
@@ -218,7 +230,7 @@ void M_OnBar(datetime now, datetime bar)
       Print("[SAR 단타] 포지션 보유 중이라 신호 무시");
       return;
    }
-   if (m_vside != 0)
+   if (M_WINRATE_PAUSE && m_vside != 0)
    {
       Print("[SAR 단타] 가상 포지션 진행 중이라 신호 무시");
       return;
@@ -259,6 +271,15 @@ void M_OnBar(datetime now, datetime bar)
       Print(StringFormat("[SAR 단타] 5분봉 ATR %.2f$ > 20일 중앙값 %.2f$ x %g (급변동)이라 신규 진입 안 함", atr, ref, M_MAX_ATR_MULT));
       return;
    }
+   bool up2[];
+   double sv[], tg[];
+   PsarLevels(h, l, n, up2, sv, tg);
+   double ext = (c[n - 1] - tg[n - 1]) * side / atr, risk = (c[n - 1] - sv[n - 1]) * side / atr;
+   if (ext > M_MAX_EXT || risk > M_MAX_RISK)
+   {
+      Print(StringFormat("[SAR 단타] 과열 (뚫은 SAR에서 %.2f ATR, 새 SAR 점까지 %.2f ATR)이라 신규 진입 안 함", ext, risk));
+      return;
+   }
    string reason = RiskBlock(m_tag, M_ST, M_ACCOUNT_STOP_PCT);
    if (reason != "")
    {
@@ -284,6 +305,27 @@ void M_OnBar(datetime now, datetime bar)
    M_Place(side, M_LotFor(M_BaseLot()), bar, c[n - 1]);
 }
 
+// 반대 콩 청산: 방금 완성된 5분봉 SAR 방향이 포지션과 반대면 시장가 청산
+void M_SarExit(datetime bar)
+{
+   int tk = MyTicket(MagicMartin);
+   if (!M_SAR_EXIT || tk < 0 || !OrderSelect(tk, SELECT_BY_TICKET))
+      return;
+   int pside = OrderType() == OP_BUY ? 1 : -1;
+   datetime t[];
+   double h[], l[], c[];
+   bool up[];
+   int n = LoadBars(PERIOD_M5, 600, t, h, l, c);
+   if (n < 50 || t[n - 1] != bar)
+      return;
+   Psar(h, l, n, up);
+   if ((up[n - 1] ? 1 : -1) == pside)
+      return;
+   Print(StringFormat("[%s] 5분봉 SAR %s 전환 -> 반대 콩 청산: 티켓 %d", m_tag, up[n - 1] ? "상승" : "하락", tk));
+   m_sarClose = true;
+   CloseTicket(m_tag, tk, M_SLIP_USD);
+}
+
 //---------------------------------------------------------------- Infinox_Bots.mq4에서 부름
 void M_Init()
 {
@@ -305,7 +347,7 @@ string M_StartText()
 {
    int k;
    double wr = M_WinRate(k);
-   string s = StringFormat("전략: %s\nlot %.2f (오늘 시작 잔고 기준)\n안전장치: 최대 lot %g, 계좌 손실 한도 %g%%, 최근 %d건 승률 %.1f%%%s",
+   string s = StringFormat("전략: %s\nlot %.2f (오늘 시작 잔고 기준)\n안전장치: 최대 lot %g, 계좌 손실 한도 %g%% (최근 %d건 승률 %.1f%%%s)",
                            M_Desc(), M_LotFor(M_BaseLot()), MartinMaxLot, M_ACCOUNT_STOP_PCT, k, wr, M_IsPaused() ? " (쉬는 중)" : "");
    string halted = StGet(M_ST, "halted", "");
    if (halted != "")
@@ -333,6 +375,8 @@ void M_Timer(bool on)
    if (bar == 0 || bar == m_lastBar)
       return;
    m_lastBar = bar;
+   M_SarExit(bar);
+   M_CheckClosed();      // 반대 콩으로 닫혔으면 새 진입 전에 기록
    if (on)
       M_OnBar(now, bar);
 }

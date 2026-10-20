@@ -5,14 +5,21 @@ import pandas as pd
 
 def psar(h, l, step=0.02, mx=0.2):
     """파라볼릭 SAR. 각 봉에서 상승 추세(True) / 하락 추세(False) 배열을 반환"""
+    return psar_levels(h, l, step, mx)[0]
+
+
+def psar_levels(h, l, step=0.02, mx=0.2):
+    """파라볼릭 SAR. (추세 배열, 각 봉 끝의 SAR 점, 그 봉에서 뚫어야 했던 SAR 값)"""
     n = len(h)
     up = np.zeros(n, bool)
     sar = np.zeros(n)
+    trig = np.full(n, np.nan)
     up[0], sar[0], ep, af = True, l[0], h[0], step
     for i in range(1, n):
         s = sar[i-1] + af * (ep - sar[i-1])
         if up[i-1]:
             s = min(s, l[i-1], l[i-2] if i > 1 else l[i-1])
+            trig[i] = s
             if l[i] < s:
                 up[i], s, ep, af = False, ep, l[i], step
             else:
@@ -21,6 +28,7 @@ def psar(h, l, step=0.02, mx=0.2):
                     ep, af = h[i], min(af + step, mx)
         else:
             s = max(s, h[i-1], h[i-2] if i > 1 else h[i-1])
+            trig[i] = s
             if h[i] > s:
                 up[i], s, ep, af = True, ep, h[i], step
             else:
@@ -28,7 +36,7 @@ def psar(h, l, step=0.02, mx=0.2):
                 if l[i] < ep:
                     ep, af = l[i], min(af + step, mx)
         sar[i] = s
-    return up
+    return up, sar, trig
 
 
 def ema(s, n):

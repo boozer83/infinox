@@ -36,7 +36,14 @@
    PF 1.20 -> 1.22, 추세추종과 같이 돌리면 낙폭 35% -> 29%, 최악의 날 -24% -> -20%)
 최대 lot 제한:
 - 마틴 lot은 그날 시작 lot의 MAX_LOT_MULT(5)배까지만. 1,000달러면 0.03 / 0.06 / 0.12 / 0.15 / 0.15
-성적 기반 쉬기:
+과열 거르기 (2026-10-21 추가, backtests/ext_filter.py. 2025로 고르고 2026으로 확인):
+- 신호 봉 종가가 방금 뚫은 SAR 값에서 ATR x MAX_EXT(0.8) 넘게 갔거나,
+  새 SAR 점(반대 콩 자리)에서 ATR x MAX_RISK(2.8) 넘게 떨어져 있으면 진입 안 함 (이미 많이 간 자리)
+  (반대 콩 청산 기준: 2025 +66% -> +73%, 낙폭 38.9% -> 29.8% / 2026 +741% -> +967%, 24.0% -> 19.2%)
+반대 콩 청산 (2026-10-21 추가):
+- 포지션 보유 중 5분봉 SAR이 반대로 전환되면(완성 봉 기준) TP/SL 전이라도 시장가 청산 (SAR_EXIT)
+  (backtests/sar_exit.py, 승률 쉬기 끔 기준: 2026 +751% -> +741%, 낙폭 27.8% -> 24.0% / 2025 +70% -> +66%, 44.7% -> 38.9%)
+성적 기반 쉬기 (WINRATE_PAUSE, 2026-10-21부터 꺼 둠: 반대 콩 청산으로 승률이 71.8% 근처라 켜 두면 자주 쉬게 됨):
 - 최근 WINRATE_N(200)개 결과의 승률이 WINRATE_MIN(71.4%) 미만이면 실제 진입 대신 가상 진입만 함.
   가상 진입도 같은 SL/TP로 결과를 기록해서, 승률이 회복되면 자동으로 실제 진입을 다시 시작
   기록: <로그 폴더>/winrate.json (처음에는 백테스트 마지막 200건으로 채워 둠)
@@ -77,7 +84,7 @@ import MetaTrader5 as mt5
 import pandas as pd
 
 from config import SYMBOL, mt5_init
-from indicators import atr, psar, rsi
+from indicators import atr, psar, psar_levels, rsi
 from reports import ServerClock, summary_line
 from telegram_notify import Notifier
 
@@ -103,11 +110,17 @@ MIN_ATR = 2.5
 MAX_ATR_MULT = 2.0
 ATR_REF_BARS = 20 * 276    # 5분봉 하루 약 276개 (23시간 장)
 ATR_REF_MIN = 2000         # 기록이 이보다 적으면 이 필터는 건너뜀
+# 과열 거르기: (종가 - 뚫은 SAR 값) / ATR, (종가 - 새 SAR 점) / ATR 이 넘으면 진입 안 함
+MAX_EXT = 0.8
+MAX_RISK = 2.8
 # 마틴 lot 상한: 그날 시작 lot의 몇 배까지
 MAX_LOT_MULT = 5
 # 성적 기반 쉬기: 최근 N개 결과(실제 + 가상) 승률이 이 값(%) 미만이면 가상 진입만
+WINRATE_PAUSE = False     # 끔: 승률은 기록만
 WINRATE_N = 200
 WINRATE_MIN = 71.4
+# 반대 콩 청산: 보유 중 5분봉 SAR이 반대로 전환되면 시장가 청산
+SAR_EXIT = True
 FRIDAY_CLOSE = "23:30"
 # 실계좌 안전장치
 MAX_LOT = 1.0             # 한 번에 진입할 최대 lot (넘으면 이 lot으로 깎아서 진입)
@@ -247,7 +260,20 @@ def compute_signal(m5, h1):
             side = s
     desc = (f"SAR {'상승' if up[-1] else '하락'}{'(전환)' if up[-1] != up[-2] else ''} "
             f"RSI {r[-1]:.1f} H1 SAR {'상승' if hdir == 1 else '하락'}")
-    return side, m5.time.iat[-1], float(m5.close.iat[-1]), desc
+    return side, m5.time.iat[-1], float(m5.close.iat[-1]), desc, (1 if up[-1] else -1)
+
+
+def overextended(m5, side):
+    """신호 봉이 이미 많이 간 자리면 이유, 아니면 None"""
+    _, sar, trig = psar_levels(m5.high.values, m5.low.values)
+    a = float(atr(m5).iat[-1])
+    c = float(m5.close.iat[-1])
+    ext, risk = (c - trig[-1]) * side / a, (c - sar[-1]) * side / a
+    if ext > MAX_EXT:
+        return f"뚫은 SAR에서 {ext:.2f} ATR (> {MAX_EXT})"
+    if risk > MAX_RISK:
+        return f"새 SAR 점까지 {risk:.2f} ATR (> {MAX_RISK})"
+    return None
 
 
 def atr_ref():
@@ -331,6 +357,8 @@ def winrate(wr):
 
 
 def is_paused(wr):
+    if not WINRATE_PAUSE:
+        return False
     rate, n = winrate(wr)
     return n >= WINRATE_N and rate < WINRATE_MIN
 
@@ -433,20 +461,20 @@ def place(side, lot, level, signal_bar, signal_price):
     return row
 
 
-def close_position(p):
+def close_position(p, comment="friday close", what="금요일 청산"):
     tick = mt5.symbol_info_tick(SYMBOL)
     is_buy = p.type == mt5.POSITION_TYPE_BUY
     req = {
         "action": mt5.TRADE_ACTION_DEAL, "symbol": SYMBOL, "volume": p.volume, "position": p.ticket,
         "type": mt5.ORDER_TYPE_SELL if is_buy else mt5.ORDER_TYPE_BUY,
         "price": tick.bid if is_buy else tick.ask, "deviation": DEVIATION, "magic": MAGIC,
-        "comment": "friday close", "type_time": mt5.ORDER_TIME_GTC, "type_filling": filling_mode(),
+        "comment": comment, "type_time": mt5.ORDER_TIME_GTC, "type_filling": filling_mode(),
     }
     res = mt5.order_send(req)
     ok = res is not None and res.retcode == mt5.TRADE_RETCODE_DONE
-    log.info(f"금요일 청산 {'완료' if ok else '실패'}: 티켓 {p.ticket} {res.retcode if res else mt5.last_error()}")
+    log.info(f"{what} {'완료' if ok else '실패'}: 티켓 {p.ticket} {res.retcode if res else mt5.last_error()}")
     if not ok:
-        send(f"❗ 금요일 청산 실패: 티켓 {p.ticket} {res.retcode if res else mt5.last_error()}")
+        send(f"❗ {what} 실패: 티켓 {p.ticket} {res.retcode if res else mt5.last_error()}")
 
 
 def find_close(ticket):
@@ -461,8 +489,23 @@ def find_close(ticket):
     reason = {mt5.DEAL_REASON_TP: "TP", mt5.DEAL_REASON_SL: "SL"}.get(d.reason, "CLOSE")
     if d.comment == "friday close":
         reason = "FRIDAY"
+    elif d.comment == "sar exit":
+        reason = "SAR"
     return {"close_time": datetime.fromtimestamp(d.time, timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
             "close_price": d.price, "profit": round(profit, 2), "result": reason}
+
+
+def check_closed(open_row, wr):
+    """진입했던 포지션이 닫혔으면 기록·알림하고 None, 아니면 그대로"""
+    if open_row and not any(p.ticket == open_row["ticket"] for p in my_positions()):
+        c = find_close(open_row["ticket"])
+        if c:
+            open_row.update(c)
+            append_row(open_row)
+            notify_close(open_row)
+            record_result(wr, float(open_row["profit"]) > 0, "실제")
+            return None
+    return open_row
 
 
 def append_row(row):
@@ -484,7 +527,7 @@ def notify_close(row):
     bal = mt5.account_info().balance
     pct = profit / (bal - profit) * 100 if bal - profit > 0 else 0.0
     level, stopped, base = martin_state(clock.now())
-    icon = {"TP": "✅ 익절", "SL": "❌ 손절", "FRIDAY": "⏹ 금요일 청산"}.get(row["result"], "⏹ 청산")
+    icon = {"TP": "✅ 익절", "SL": "❌ 손절", "FRIDAY": "⏹ 금요일 청산", "SAR": "↩️ 반대 콩 청산"}.get(row["result"], "⏹ 청산")
     nxt = "오늘 거래 정지 (5번째 진입 손절)" if stopped else f"다음 진입 {level_text(level)} ({lot_for(level, base)} lot)"
     log.info(f"청산 {row['result']} @ {row['close_price']} 손익 {profit} -> {nxt}")
     send(f"{icon} {row.get('side', '')} {row.get('lot', '')} lot\n"
@@ -530,7 +573,10 @@ def main():
     limits = (f"최대 lot {MAX_LOT} (넘으면 {MAX_LOT}로 진입){f' (마틴은 시작 lot의 {MAX_LOT_MULT}배까지)' if MARTIN else ''}, 하루 손실 한도 {daily}, "
               f"계좌 손실 한도 {ACCOUNT_STOP_PCT:g}%, ATR {MIN_ATR:g}$ 미만 쉼, "
               f"ATR이 20일 중앙값의 {MAX_ATR_MULT:g}배 초과면 쉼, "
-              f"최근 {WINRATE_N}건 승률 {WINRATE_MIN:g}% 미만 쉼 (지금 {n}건 {rate:.1f}%{', 쉬는 중' if is_paused(wr) else ''})")
+              + (f"최근 {WINRATE_N}건 승률 {WINRATE_MIN:g}% 미만 쉼 (지금 {n}건 {rate:.1f}%{', 쉬는 중' if is_paused(wr) else ''})"
+                 if WINRATE_PAUSE else f"승률 쉬기 꺼짐 (최근 {n}건 {rate:.1f}%)")
+              + (", 5분봉 SAR 반대 전환이면 청산" if SAR_EXIT else "")
+              + f", 과열 거르기 (뚫은 SAR에서 {MAX_EXT} ATR / 새 SAR 점까지 {MAX_RISK} ATR 초과면 쉼)")
     log.info(f"시작: 계좌 {acc.login} ({acc.server}, {kind}) 잔고 {acc.balance} {acc.currency}, {SYMBOL} "
              f"SL {SL_USD} TP {TP_USD}, {'마틴 ' if MARTIN else ''}{lots}, {limits}{' [DRY-RUN]' if args.dry_run else ''}"
              f", 텔레그램 {'켜짐' if tg.enabled else '꺼짐'}")
@@ -564,14 +610,7 @@ def main():
             now = clock.now()
 
             # 진입했던 포지션이 닫혔는지 확인
-            if open_row and not any(p.ticket == open_row["ticket"] for p in my_positions()):
-                c = find_close(open_row["ticket"])
-                if c:
-                    open_row.update(c)
-                    append_row(open_row)
-                    notify_close(open_row)
-                    record_result(wr, float(open_row["profit"]) > 0, "실제")
-                    open_row = None
+            open_row = check_closed(open_row, wr)
             check_virtual(wr)
 
 
@@ -586,14 +625,19 @@ def main():
             if m5 is not None and m5.time.iat[-1] != last_bar:
                 last_bar = m5.time.iat[-1]
                 h1 = rates(mt5.TIMEFRAME_H1, H1_BARS)
-                side, bar, close, desc = compute_signal(m5, h1)
+                side, bar, close, desc, sar_dir = compute_signal(m5, h1)
                 log.info(f"봉 {bar:%m-%d %H:%M} 종가 {close}: {desc}"
                          + (f" -> 신호 {'매수' if side == 1 else '매도'}" if side else ""))
+                if SAR_EXIT and not args.dry_run:
+                    for p in my_positions():
+                        if (1 if p.type == mt5.POSITION_TYPE_BUY else -1) != sar_dir:
+                            close_position(p, "sar exit", "반대 콩 청산")
+                    open_row = check_closed(open_row, wr)     # 같은 봉에서 새로 진입하기 전에 기록
                 if side and not args.dry_run:
                     level, stopped, base = martin_state(now)
-                    if my_positions():
-                        log.info("포지션 보유 중이라 신호 무시")
-                    elif wr["virtual"]:
+                    if my_positions() or open_row:
+                        log.info("포지션 보유 중(또는 방금 청산 기록 대기)이라 신호 무시")
+                    elif WINRATE_PAUSE and wr["virtual"]:
                         log.info("가상 포지션 진행 중이라 신호 무시")
                     elif stopped:
                         log.info("오늘은 5번째 진입 손절로 거래 정지 상태라 신호 무시")
@@ -607,6 +651,8 @@ def main():
                         log.info(f"5분봉 ATR {a:.2f}$ < {MIN_ATR}$ (조용한 시장)이라 신규 진입 안 함")
                     elif (ref := atr_ref()) and a > MAX_ATR_MULT * ref:
                         log.info(f"5분봉 ATR {a:.2f}$ > 20일 중앙값 {ref:.2f}$ x {MAX_ATR_MULT:g} (급변동)이라 신규 진입 안 함")
+                    elif ov := overextended(m5, side):
+                        log.info(f"과열 ({ov})이라 신규 진입 안 함")
                     elif reason := risk_block(now, lot_for(level, base)):
                         log.info(f"안전장치: {reason} -> 신규 진입 안 함")
                         if risk_notified != now.date():

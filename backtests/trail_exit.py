@@ -165,7 +165,7 @@ def summary(a):
     w = tr[tr.oz > 0]
     out = {"거래": len(tr), "승률%": round((tr.oz > 0).mean() * 100, 1), "평균 이익$/oz": round(w.oz.mean(), 2),
            "3$넘게 번 비율%": round((w.oz > TP + 0.01).mean() * 100, 1), "최대 이익$/oz": round(w.oz.max(), 1),
-           "이긴 거래 보유(분, 중간값)": round(w.mins.median(), 1), "PF": round(gp / gl, 2),
+           "이긴 거래 보유(분, 중간값)": round(w.mins.median(), 1), "PF": round(gp / gl, 2) if gl else float("inf"),
            "최종잔고$": round(tr.bal.iat[-1]), "최대낙폭%": round(a.mdd * 100, 1),
            "최악의날%": round((daily / day_start).min() * 100, 1)}
     prev = BAL0
