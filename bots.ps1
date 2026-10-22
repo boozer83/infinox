@@ -7,7 +7,7 @@ param([ValidateSet("demo", "live", "all", "status", "stop-demo", "stop-live")][s
 
 $Dir = $PSScriptRoot
 $Bots = @("demo_trader.py", "trend_trader.py", "asia_breakout_trader.py", "report_bot.py")
-$DemoOnly = @("hedge_martin_trader.py")   # demo account only (no --live)
+$DemoOnly = @("hedge_martin_trader.py", "news_trader.py")   # demo account only (no --live)
 $LiveEnv = @{ MT5_TERMINAL_PATH = "C:\MT5_LIVE\terminal64.exe"; MT5_PORTABLE = "1"; MT5_SYMBOL = "XAUUSD#" }
 
 function Get-Bots([bool]$Live) {

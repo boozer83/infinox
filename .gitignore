@@ -11,6 +11,7 @@ trend_live_log/
 live_log/
 asia_log/
 asia_live_log/
+news_log/
 report_log/
 report_live_log/
 results/
@@ -28,3 +29,8 @@ __pycache__/
 # 백테스트 실행 로그
 *.log
 hedge_log/
+
+# 다른 사람 거래내역 캡처 (공개 저장소라 절대 올리지 말 것)
+다른사람거래내역/
+*.jpg
+*.jpeg

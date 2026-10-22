@@ -5,6 +5,10 @@
   2) 한쪽이 CUT$ 역행하면 그쪽 청산 (10/21 BOE: 2.0$ 역행에서 19초 만에 손절)
   3) 발표 후 5분 동안 어느 쪽도 CUT에 안 닿으면 양쪽 동시 종료 (10/21 09:05:00)
   4) 남은 쪽: 발표 10분 뒤 이익이면 종료, 손실이면 본전(0) 이상 될 때 종료 (최대 60분, 그 전에 CUT 손절)
+     win_stop=True면 남은 쪽도 CUT$ 역행에서 손절 (슬라이드에는 없는 가정), False면 손절 없이 최대 60분
+     win_cut을 주면 남은 쪽 손절폭만 따로 (비상 손절), close10=True면 10분에 손익과 무관하게 종료
+     target을 주면 10분 전이라도 남은 쪽 이익이 target$에 닿으면 종료 (슬라이드 "목표수익 미도달 시 조기 종료", 값은 모름)
+캘린더 시각은 지금 서버 시차(GMT+3)로 나와서 미국 서머타임이 아닌 날은 1시간 당김 (2026-10-22 고침: 전에는 겨울에 1시간 늦게 진입)
 대상: MT5 캘린더(calendar_all.csv) USD/EUR/GBP, 중요도 high (moderate는 따로 비교)
 같은 시각 발표가 여러 개면 한 번만. 결과는 금 1온스(1 lot의 1/100) 기준 $ 합계 (매수+매도)
 
@@ -27,6 +31,9 @@ def events():
     c = pd.read_csv(f, encoding="cp949")
     c = c[c.currency.isin(["USD", "EUR", "GBP"]) & c.importance.isin(["high", "moderate"])].copy()
     c["t"] = pd.to_datetime(c.time, format="%Y.%m.%d %H:%M")
+    c = c[(c.t.dt.hour > 0) | (c.t.dt.minute > 0)]       # 시각 없는 하루 종일 일정(00:00) 제외
+    dst = c.t.dt.tz_localize("America/New_York", ambiguous=True, nonexistent="shift_forward").map(lambda x: bool(x.dst()))
+    c["t"] = c.t - pd.to_timedelta((~dst.values).astype(int), unit="h")
     c = c[(c.t >= "2022-01-03") & (c.t < "2026-10-22")]
     c["rank"] = c.importance.map({"high": 2, "moderate": 1})
     c = c.sort_values(["t", "rank"], ascending=[True, False]).drop_duplicates("t")
@@ -39,8 +46,8 @@ def first(cond):
     return k[0] if k.size else None
 
 
-def one(t, bid, ask, ms, cut):
-    """발표 시각 ms 하나 -> (매수 $/oz, 매도 $/oz, 결과 종류) 또는 None"""
+def one(t, bid, ask, ms, cut, target=None, win_stop=True, win_cut=None, close10=False):
+    """발표 시각 ms 하나 -> (매수 $/oz, 매도 $/oz, 결과 종류, 청산 시각 ms) 또는 None"""
     k0 = int(np.searchsorted(t, ms - PRE_MS))
     if k0 >= len(t) or t[k0] - (ms - PRE_MS) > 20_000:
         return None
@@ -54,7 +61,7 @@ def one(t, bid, ask, ms, cut):
     quiet = int(np.searchsorted(tt, ms + QUIET_MS))
     if (lb_ is None or lb_ >= quiet) and (ls_ is None or ls_ >= quiet):
         q = min(quiet, len(tt) - 1)
-        return b[q] - eb, es - a[q], "5분 무반응"
+        return b[q] - eb, es - a[q], "5분 무반응", int(tt[q])
     if lb_ is not None and (ls_ is None or lb_ <= ls_):
         loser, pb, side, e = "매수", -cut, -1, es
         x, sl = a, es + cut
@@ -64,16 +71,21 @@ def one(t, bid, ask, ms, cut):
     k1 = lb_ if loser == "매수" else ls_
     h10 = int(np.searchsorted(tt, ms + HOLD_MS))
     pnl = (x - e) * side
-    stop = first(pnl[k1:] <= -cut)
-    stop = k1 + stop if stop is not None else len(tt) - 1
-    if h10 < len(tt) and pnl[h10] > 0:
+    stop = first(pnl[k1:] <= -(win_cut or cut))
+    stop = k1 + stop if stop is not None and win_stop else len(tt) - 1     # win_stop=False: 남은 쪽은 손절 없음 (슬라이드)
+    if h10 < len(tt) and (pnl[h10] > 0 or close10):
         j = h10
     else:
         be = first(pnl[max(h10, k1):] >= 0)
         j = max(h10, k1) + be if be is not None else len(tt) - 1
+    if target is not None:
+        tg = first(pnl[k1:max(k1, min(h10, len(tt)))] >= target)
+        if tg is not None:
+            j = min(j, k1 + tg)
     j = min(j, stop)
     win = pnl[j]
-    return (win, -cut, "매도 손절 후 매수") if loser == "매도" else (-cut, win, "매수 손절 후 매도")
+    lose = es - a[k1] if loser == "매도" else b[k1] - eb       # 손절 틱 실제 가격 (발표 때 건너뛰면 -cut보다 큼)
+    return (win, lose, "매도 손절 후 매수", int(tt[j])) if loser == "매도" else (lose, win, "매수 손절 후 매도", int(tt[j]))
 
 
 def main():
