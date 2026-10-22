@@ -43,7 +43,7 @@ def months():
 def month_range(y, m):
     s = datetime(y, m, 1, tzinfo=timezone.utc)
     e = datetime(y + 1, 1, 1, tzinfo=timezone.utc) if m == 12 else datetime(y, m + 1, 1, tzinfo=timezone.utc)
-    return s, min(e, datetime.now(timezone.utc))
+    return s, min(e, datetime.now(timezone.utc) + timedelta(hours=12))   # 틱 시각은 서버 시간(UTC보다 앞섬)이라 여유를 둠
 
 
 def download_all():

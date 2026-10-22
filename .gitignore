@@ -24,3 +24,7 @@ results/
 __pycache__/
 *.pyc
 .venv/
+
+# 백테스트 실행 로그
+*.log
+hedge_log/
