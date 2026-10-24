@@ -223,6 +223,7 @@ python trend_trader.py --symbol XETUSD   # 이더리움 (데모 전용, 매직 2
 - **뉴스 양방향** (`news_trader.py`): 미국 CPI·고용·FOMC 금리 결정 발표 30초 전 양방향 진입 → 발표가 0.05% 움직이면 반대쪽 청산 → 5분 무반응이면 정리 → 남은 쪽 15분 또는 2$ 되돌림에 정리.
   발표 일정은 MT5 캘린더 내보내기(`mql5/ExportCalendar.mq5`, `Common\Files\calendar_all.csv`)에서 읽으므로 **매주 ExportCalendar를 실행**해야 합니다. `python news_trader.py --dry`로 다음 2주 일정을 확인합니다.
   ForexFactory 주간 일정(`common/news_calendar.py`, HK 패널 뉴스 목록과 같은 곳)도 6시간마다 받아 `data/ff_calendar.csv`에 쌓고 같이 씀 (MT5 캘린더에 빠지는 영국·유럽 지표 보완). 헤지 마틴 뉴스 필터도 두 일정을 합쳐서 봄
+  서프라이즈 모의 매매 (`news_surprise_paper.py`, 데모, 주문 없음): CalendarLive 실제치로 |S|>=2면 서프라이즈 방향 모의 진입, 발표 30분 뒤 청산 3가지 결과를 `logs/surprise_log/`와 텔레그램으로. 판단은 `common/surprise.py`. 필요한 표(`results/news_surprise_polarity.csv`, `news_surprise_trades.csv`)는 `python -m backtests.news_moves2`, `news_surprise`, `news_surprise_types` 순서로 만듦 (results/는 깃 제외). `--replay 날짜`로 지난 날 다시 돌려 보기
   실제치 수신 지연 측정: `mql5/CalendarLive.mq5` (MT5 서비스, 주문 없음)가 캘린더에 실제치가 들어오는 순간을 `Common\Files\calendar_live.csv`에 기록. 요약은 `python scripts/calendar_latency.py`
 - **단타 2마틴** (`sar_martin_trader.py`): SAR 단타와 같은 진입·청산에, 지면 다음 lot을 진 금액을 익절 한 번에 딱 되찾는 크기로 (2마틴까지). 오늘 2연속 손절이면 그날 쉼.
 
