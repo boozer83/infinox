@@ -222,6 +222,8 @@ class Trader:
     def deal(self, side, lot, comment, position=None, sl_dist=None, tp_dist=None, deviation=None):
         """시장가 주문 하나 (position을 주면 그 포지션 청산). sl/tp는 주문 가격에서의 거리($)"""
         info, tick = mt5.symbol_info(self.symbol), mt5.symbol_info_tick(self.symbol)
+        if info is None or tick is None:              # 시세 조회 실패: 주문 안 보내고 실패로 (부른 쪽이 다시 시도)
+            return Fill(False, f"시세 없음 {mt5.last_error()}", None, 0.0, None, 0.0, 0.0)
         price = tick.ask if side == 1 else tick.bid
         req = {
             "action": mt5.TRADE_ACTION_DEAL, "symbol": self.symbol, "volume": lot,
