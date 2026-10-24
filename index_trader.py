@@ -43,7 +43,7 @@ from common.trader import Trader, append_csv, load_json, side_name
 from config import SYMBOL as CLOCK_SYMBOL
 from reports import ServerClock
 
-VERSION = "2026-10-24d"
+VERSION = "2026-10-24e"
 MAGICS = {"NAS100": 20261025, "GER40": 20261026}
 NAMES = {"NAS100": "나스닥 첫30분", "GER40": "독일 ORB 매도"}
 FIRST_MIN, FIRST_STOP = 0.2, 1.0
@@ -221,9 +221,11 @@ def enter(st, side, sl_of, signal, planned):
            "type": mt5.ORDER_TYPE_BUY if side > 0 else mt5.ORDER_TYPE_SELL, "price": price, "sl": sl,
            "deviation": DEVIATION, "magic": bot.magic, "comment": f"IDX {VERSION}", "type_time": mt5.ORDER_TIME_GTC,
            "type_filling": bot.filling_mode(info)}
-    st["done"] = "주문 보냄"                       # 응답 전에 죽어도 다시 안 보냄 (다음 루프는 실제 포지션으로 복구)
-    save_state(bot.state_path, st)
     sent = bot.clock.now()
+    st["done"] = "주문 보냄"                       # 응답 전에 죽어도 다시 안 보냄
+    st["pending"] = {"sent_ms": int(utc(sent).timestamp() * 1000), "order": 0, "comment": ""}   # 재시작 뒤 체결 이력으로 복원
+    st.update(req_price=price, req_lot=lot, sl=sl, side=side, signal=signal)
+    save_state(bot.state_path, st)
     res = mt5.order_send(req)
     got = bot.clock.now()
     time.sleep(0.5)
@@ -234,8 +236,8 @@ def enter(st, side, sl_of, signal, planned):
               req_lot=lot, req_price=price, entry_spread=round(t.ask - t.bid, 2), sl=sl, target_risk=round(target, 2),
               risk=round(risk, 2), currency=mt5.account_info().currency, retcode=res.retcode if res else mt5.last_error(),
               order=res.order if res else "", deal=res.deal if res else "")
-    st["pending"] = {"sent_ms": int(utc(sent).timestamp() * 1000), "order": res.order if res else 0,
-                     "comment": res.comment if res else str(mt5.last_error())}
+    st["pending"].update(order=res.order if res else 0, comment=res.comment if res else str(mt5.last_error()))
+    save_state(bot.state_path, st)
     if not pos:                                        # 조회 실패이거나 아직 안 보이거나 이미 닫힘 -> 체결 이력으로 확정
         resolve_pending(st)
         return
@@ -278,14 +280,20 @@ def resolve_pending(st):
     """결과를 모르는 주문: 그 뒤의 이 봇 진입 체결을 찾아 이어받음. PENDING_SEC 지나도 없으면 실패로 확정"""
     pd_ = st["pending"]
     t0 = pd_["sent_ms"] / 1000 - 5
-    deals = mt5.history_deals_get(datetime.fromtimestamp(t0, timezone.utc), datetime.fromtimestamp(t0 + 3600, timezone.utc))
+    t1 = utc(bot.clock.now()).timestamp() + 60
+    deals = mt5.history_deals_get(datetime.fromtimestamp(t0, timezone.utc), datetime.fromtimestamp(t1, timezone.utc))
     if deals is None:
         return
     ins = [d for d in deals if d.magic == bot.magic and d.symbol == bot.symbol and d.entry == mt5.DEAL_ENTRY_IN]
     if ins:
-        pids = {d.position_id for d in ins}
-        allin = [d for pid in pids for d in (mt5.history_deals_get(position=pid) or ()) if d.entry == mt5.DEAL_ENTRY_IN]
-        adopt_deals(st, allin or ins)
+        allin = []
+        for pid in sorted({d.position_id for d in ins}):       # 찾은 포지션은 하나도 빠짐없이 확인돼야 채택
+            got = mt5.history_deals_get(position=pid)
+            mine = [d for d in (got or ()) if d.entry == mt5.DEAL_ENTRY_IN]
+            if got is None or not mine:
+                return                                          # 다음 루프에서 다시
+            allin += mine
+        adopt_deals(st, allin)
         st.pop("pending")
         st["done"] = "진입"
         bot.log.info(f"주문 결과 확인: 포지션 {st['positions']} {st['lot']} lot @ {st['fill']}")
@@ -325,6 +333,15 @@ def close_all(pos, why, st):
                 bot.send(f"❗ {why} 실패 (티켓 {p.ticket}, {f.err}). 닫힐 때까지 1초마다 다시 시도")
 
 
+def already_recorded(key):
+    f = bot.log_dir / "trades.csv"
+    if not f.exists():
+        return False
+    import csv
+    with open(f, encoding="utf-8-sig") as fh:
+        return any(r.get("positions") == key for r in csv.DictReader(fh))
+
+
 def finish(st):
     """포지션이 다 닫혔으면 기록 (부분 청산은 체결량 가중 평균)"""
     deals = []
@@ -338,6 +355,13 @@ def finish(st):
             return False
         deals += list(got)
     out = sorted((d for d in deals if d.entry in (mt5.DEAL_ENTRY_OUT, mt5.DEAL_ENTRY_OUT_BY)), key=lambda d: d.time_msc)
+    ins = [d for d in deals if d.entry == mt5.DEAL_ENTRY_IN]
+    vin = sum(d.volume for d in ins)
+    st["lot"], st["fill"] = round(vin, 8), round(sum(d.price * d.volume for d in ins) / vin, 2)   # 부분 청산된 것까지 전체 진입으로
+    key = "|".join(str(x) for x in st.get("positions") or [st["position"]])
+    if already_recorded(key):                          # 기록 뒤 상태 저장 전에 죽었던 경우
+        st["position"] = None
+        return True
     vol = sum(d.volume for d in out)
     px = sum(d.price * d.volume for d in out) / vol
     profit = round(sum(d.profit + d.commission + d.swap for d in deals), 2)
@@ -428,6 +452,9 @@ def main():
                 save_state(bot.state_path, st)
                 time.sleep(POLL_SEC)
                 continue
+            if st.get("done") == "주문 보냄" and not st.get("pending") and not st.get("position") and st.get("day"):
+                day0 = datetime.strptime(st["day"], "%Y-%m-%d")             # 예전 버전 상태: 그날 처음부터 체결 찾기
+                st["pending"] = {"sent_ms": int(utc(day0).timestamp() * 1000), "order": 0, "comment": "재시작 복원"}
             if st.get("pending") and not st.get("position"):
                 resolve_pending(st)
                 save_state(bot.state_path, st)
