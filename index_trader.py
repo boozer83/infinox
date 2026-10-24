@@ -13,7 +13,8 @@ lot = 거래당 위험 RISK_PCT% / 1 lot 손실(order_calc_profit), 종목 lot �
   - 상태 파일보다 MT5 실제 포지션·오늘 체결 이력을 먼저 봄: 이 매직의 포지션이 있거나 오늘 진입 체결이 있으면 새 진입 안 함
   - 한 종목에 한 프로세스만 (윈도우 이름 있는 뮤텍스), 상태 파일은 임시 파일에 쓰고 바꿔치기
   - 재시작 때 GER40 가운데 손절은 그날 범위를 다시 계산해서 복원 (안 되면 정리), 손절·마감 청산은 닫힐 때까지 다시 시도
-  - 진입 뒤 바로 닫혀도 체결 번호로 이어받아 기록, 기록 못 한 거래는 날이 바뀌어도 따로 보관해서 다시 시도 (2026-10-24 GPT 2차 검증)
+  - 주문 결과를 모르면(조회 실패·아직 안 보임·바로 닫힘) PENDING_SEC 동안 체결 이력으로 확정 (날 바뀌어도 유지),
+    청산 기록은 포지션마다 진입량 = 청산량일 때만 완료 (3차 검증), 기록 못 한 거래는 날이 바뀌어도 따로 보관해서 다시 시도 (2026-10-24 GPT 2차 검증)
   - 주문 응답이 이상해도(부분 체결 등) 실제 포지션을 다시 조회해서 이어받음. 포지션 조회 실패면 그 루프는 새 진입 안 함
   - 진입은 한 번 읽은 호가로 lot·손절을 계산하고 손절가 방향·최소 거리 확인. 진입 예정 시각보다 LATE_SEC초 넘게 늦으면 건너뜀
   - GER40은 범위 이후 마감된 1분봉을 빠짐없이 순서대로 확인해서 '처음 돌파'를 찾음 (재시작해도 같은 봉을 찾음)
@@ -42,7 +43,7 @@ from common.trader import Trader, append_csv, load_json, side_name
 from config import SYMBOL as CLOCK_SYMBOL
 from reports import ServerClock
 
-VERSION = "2026-10-24c"
+VERSION = "2026-10-24d"
 MAGICS = {"NAS100": 20261025, "GER40": 20261026}
 NAMES = {"NAS100": "나스닥 첫30분", "GER40": "독일 ORB 매도"}
 FIRST_MIN, FIRST_STOP = 0.2, 1.0
@@ -51,6 +52,7 @@ ATR_DAYS = 14
 RISK_PCT = 0.25          # 목표 위험 (잔고 %)
 MAX_RISK_PCT = 0.5       # 최소 lot이어도 이보다 크면 건너뜀
 ENTRY_DELAY_MS = 300
+PENDING_SEC = 60         # 결과를 모르는 주문: 이 시간 동안 체결 이력을 다시 찾아보고, 없으면 실패로 봄
 LATE_SEC = 60            # 진입 예정 시각보다 이만큼 늦으면 그날 건너뜀
 CLOSE_BEFORE = 2         # 마감 이 초 전에 청산 (백테스트는 마감 직전 마지막 틱)
 SAFETY_SL_PTS = {"GER40": 20.0}   # GER40 MT5 SL 여유 (봇의 Bid 손절이 먼저)
@@ -182,9 +184,10 @@ def lot_for(side, price, sl_price):
         return None, "손실 계산 안 됨", risk
     loss = -loss
     step = info.volume_step or 0.01
-    dec = max(0, -int(math.floor(math.log10(step) + 1e-9)))
-    lot = math.floor(risk / loss / step + 1e-9) * step
-    lot = round(min(max(lot, info.volume_min), info.volume_max, 1.0), dec)
+    n = math.floor(risk / loss / step + 1e-9)
+    n = max(n, math.ceil(info.volume_min / step - 1e-9))
+    n = min(n, math.floor(min(info.volume_max, 1.0) / step + 1e-9))
+    lot = round(n * step, 8)                           # 단위의 정수배 (0.25 단위면 0.25, 0.5 ...)
     actual = loss * lot
     if actual > mt5.account_info().balance * MAX_RISK_PCT / 100:
         return None, f"최소 lot 위험 {actual:.2f}$가 {MAX_RISK_PCT:g}% 넘음", risk
@@ -217,7 +220,7 @@ def enter(st, side, sl_of, signal, planned):
     req = {"action": mt5.TRADE_ACTION_DEAL, "symbol": bot.symbol, "volume": lot,
            "type": mt5.ORDER_TYPE_BUY if side > 0 else mt5.ORDER_TYPE_SELL, "price": price, "sl": sl,
            "deviation": DEVIATION, "magic": bot.magic, "comment": f"IDX {VERSION}", "type_time": mt5.ORDER_TIME_GTC,
-           "type_filling": bot.filling_mode()}
+           "type_filling": bot.filling_mode(info)}
     st["done"] = "주문 보냄"                       # 응답 전에 죽어도 다시 안 보냄 (다음 루프는 실제 포지션으로 복구)
     save_state(bot.state_path, st)
     sent = bot.clock.now()
@@ -231,21 +234,13 @@ def enter(st, side, sl_of, signal, planned):
               req_lot=lot, req_price=price, entry_spread=round(t.ask - t.bid, 2), sl=sl, target_risk=round(target, 2),
               risk=round(risk, 2), currency=mt5.account_info().currency, retcode=res.retcode if res else mt5.last_error(),
               order=res.order if res else "", deal=res.deal if res else "")
-    if pos is None:                                    # 조회 실패: 결과 모름 -> 메인 루프가 실제 포지션·체결로 이어받음
-        bot.log.warning("주문 뒤 포지션 조회 실패, 다음 루프에서 확인")
-        return
-    if not pos:
-        dl = mt5.history_deals_get(ticket=res.deal) if res and res.deal else None
-        if dl:                                         # 진입했지만 조회 전에 이미 닫힘 (즉시 손절 등)
-            adopt_deal(st, dl[0])
-            st["done"] = "진입"
-            bot.send(f"⚠️ 진입 체결 뒤 바로 닫힘 (포지션 {dl[0].position_id}), 결과는 청산 기록으로")
-            return
-        st["done"] = f"주문 실패 ({st['retcode']} {res.comment if res else ''})"
-        bot.log.error(st["done"])
-        bot.send(f"❗ {st['done']}")
+    st["pending"] = {"sent_ms": int(utc(sent).timestamp() * 1000), "order": res.order if res else 0,
+                     "comment": res.comment if res else str(mt5.last_error())}
+    if not pos:                                        # 조회 실패이거나 아직 안 보이거나 이미 닫힘 -> 체결 이력으로 확정
+        resolve_pending(st)
         return
     adopt(st, pos)
+    st.pop("pending", None)
     st["done"] = "진입"
     bot.log.info(f"진입 {side_name(side)} {st['lot']} lot @ {st['fill']} (요청 {price}, 손절 {sl}, 위험 {risk:.2f}) {signal}")
     bot.send(f"{'📈' if side > 0 else '📉'} {side_name(side)} {st['lot']} lot @ {st['fill']} (요청 {price}, 스프레드 {t.ask - t.bid:.2f}, "
@@ -256,7 +251,7 @@ def adopt(st, pos):
     """실제 포지션으로 상태 채움 (부분 체결·재시작 복구)"""
     p = pos[0]
     vol = sum(x.volume for x in pos)
-    st.update(position=p.ticket, positions=[x.ticket for x in pos], lot=round(vol, 2),
+    st.update(position=p.ticket, positions=[x.ticket for x in pos], lot=round(vol, 8),
               fill=round(sum(x.price_open * x.volume for x in pos) / vol, 2), side=1 if p.type == 0 else -1,
               fill_time=datetime.fromtimestamp(p.time_msc / 1000, timezone.utc).strftime("%H:%M:%S.%f")[:-3],
               entry_ms=int(p.time_msc))
@@ -266,12 +261,41 @@ def adopt(st, pos):
         st["entry_delay_ms"] = st["entry_ms"] - st["planned_ms"]
 
 
-def adopt_deal(st, d):
-    """진입 체결 하나로 상태 채움 (포지션이 이미 닫혀서 positions_get에 없을 때)"""
-    st.update(position=d.position_id, positions=[d.position_id], lot=d.volume, fill=d.price,
-              side=1 if d.type == mt5.DEAL_TYPE_BUY else -1, entry_ms=int(d.time_msc),
-              fill_time=datetime.fromtimestamp(d.time_msc / 1000, timezone.utc).strftime("%H:%M:%S.%f")[:-3])
-    st["slip"] = round((d.price - st.get("req_price", d.price)) * st["side"], 2)
+def adopt_deals(st, ins):
+    """진입 체결들로 상태 채움 (포지션이 이미 닫혀서 positions_get에 없을 때). 포지션별로 전부 합산"""
+    vol = sum(d.volume for d in ins)
+    first = min(ins, key=lambda d: d.time_msc)
+    st.update(position=first.position_id, positions=sorted({d.position_id for d in ins}), lot=round(vol, 8),
+              fill=round(sum(d.price * d.volume for d in ins) / vol, 2), side=1 if first.type == mt5.DEAL_TYPE_BUY else -1,
+              entry_ms=int(first.time_msc),
+              fill_time=datetime.fromtimestamp(first.time_msc / 1000, timezone.utc).strftime("%H:%M:%S.%f")[:-3])
+    st["slip"] = round((st["fill"] - st.get("req_price", st["fill"])) * st["side"], 2)
+    if "planned_ms" in st:
+        st["entry_delay_ms"] = st["entry_ms"] - st["planned_ms"]
+
+
+def resolve_pending(st):
+    """결과를 모르는 주문: 그 뒤의 이 봇 진입 체결을 찾아 이어받음. PENDING_SEC 지나도 없으면 실패로 확정"""
+    pd_ = st["pending"]
+    t0 = pd_["sent_ms"] / 1000 - 5
+    deals = mt5.history_deals_get(datetime.fromtimestamp(t0, timezone.utc), datetime.fromtimestamp(t0 + 3600, timezone.utc))
+    if deals is None:
+        return
+    ins = [d for d in deals if d.magic == bot.magic and d.symbol == bot.symbol and d.entry == mt5.DEAL_ENTRY_IN]
+    if ins:
+        pids = {d.position_id for d in ins}
+        allin = [d for pid in pids for d in (mt5.history_deals_get(position=pid) or ()) if d.entry == mt5.DEAL_ENTRY_IN]
+        adopt_deals(st, allin or ins)
+        st.pop("pending")
+        st["done"] = "진입"
+        bot.log.info(f"주문 결과 확인: 포지션 {st['positions']} {st['lot']} lot @ {st['fill']}")
+        bot.send(f"🔁 주문 결과 확인: {side_name(st['side'])} {st['lot']} lot @ {st['fill']} (포지션 {st['positions']})")
+        return
+    if utc(bot.clock.now()).timestamp() - pd_["sent_ms"] / 1000 > PENDING_SEC:   # 서버시간은 UTC처럼 다룸 (naive.timestamp()는 PC 현지시간으로 봄)
+        st.pop("pending")
+        st["done"] = f"주문 실패 ({st.get('retcode')} {pd_['comment']})"
+        bot.log.error(st["done"])
+        bot.send(f"❗ {st['done']}")
 
 
 def ger_range(sym, day):
@@ -308,10 +332,12 @@ def finish(st):
         got = mt5.history_deals_get(position=pid)
         if got is None:
             return False
+        vin = sum(d.volume for d in got if d.entry == mt5.DEAL_ENTRY_IN)
+        vout = sum(d.volume for d in got if d.entry in (mt5.DEAL_ENTRY_OUT, mt5.DEAL_ENTRY_OUT_BY))
+        if vin <= 0 or abs(vin - vout) > 1e-9:             # 진입량만큼 다 청산된 기록이 와야 완료
+            return False
         deals += list(got)
-    out = sorted((d for d in deals if d.entry == mt5.DEAL_ENTRY_OUT), key=lambda d: d.time_msc)
-    if not out:
-        return False
+    out = sorted((d for d in deals if d.entry in (mt5.DEAL_ENTRY_OUT, mt5.DEAL_ENTRY_OUT_BY)), key=lambda d: d.time_msc)
     vol = sum(d.volume for d in out)
     px = sum(d.price * d.volume for d in out) / vol
     profit = round(sum(d.profit + d.commission + d.swap for d in deals), 2)
@@ -380,6 +406,8 @@ def main():
                     st.setdefault("day", str(p_day))
                     st.setdefault("atr", 0.0)
                     adopt(st, pos)
+                    st.pop("pending", None)
+                    st["done"] = "진입"
                     bot.log.info(f"포지션 이어받음 {st}")
                     bot.send(f"🔁 열린 포지션 이어받음 (티켓 {st['positions']}, {st['lot']} lot @ {st['fill']})")
                 if sym == "GER40" and "mid" not in st:
@@ -400,14 +428,18 @@ def main():
                 save_state(bot.state_path, st)
                 time.sleep(POLL_SEC)
                 continue
+            if st.get("pending") and not st.get("position"):
+                resolve_pending(st)
+                save_state(bot.state_path, st)
             if st.get("position"):
                 finish(st)
                 save_state(bot.state_path, st)
             for rec in list(st.get("unfinished", [])):     # 지난 날 기록 못 한 거래
                 if finish(rec):
                     st["unfinished"].remove(rec)
-            if st.get("day") != str(d):
-                left = st.get("unfinished", []) + ([st] if st.get("position") else [])
+            if st.get("day") != str(d) and not st.get("pending"):
+                old = {k: v for k, v in st.items() if k != "unfinished"}
+                left = st.get("unfinished", []) + ([old] if old.get("position") else [])
                 st = {"day": str(d), "unfinished": left} if left else {"day": str(d)}
             if b is None or st.get("done") or now < b[0] or now >= b[1]:
                 save_state(bot.state_path, st)

@@ -210,9 +210,9 @@ class Trader:
                        and d.entry == mt5.DEAL_ENTRY_OUT), key=lambda d: d.time_msc)
 
     # ---- 주문
-    def filling_mode(self):
-        # 파이썬 패키지에 SYMBOL_FILLING_* 상수가 없어서 MQL5 값 사용 (FOK = 1, IOC = 2)
-        fm = mt5.symbol_info(self.symbol).filling_mode
+    def filling_mode(self, info=None):
+        # 파이썬 패키지에 SYMBOL_FILLING_* 상수가 없어서 MQL5 값 사용 (FOK = 1, IOC = 2). info를 주면 다시 조회 안 함
+        fm = (info or mt5.symbol_info(self.symbol)).filling_mode
         if fm & 1:
             return mt5.ORDER_FILLING_FOK
         if fm & 2:
@@ -229,7 +229,7 @@ class Trader:
             "action": mt5.TRADE_ACTION_DEAL, "symbol": self.symbol, "volume": lot,
             "type": mt5.ORDER_TYPE_BUY if side == 1 else mt5.ORDER_TYPE_SELL, "price": price,
             "deviation": self.deviation if deviation is None else deviation, "magic": self.magic,
-            "comment": comment, "type_time": mt5.ORDER_TIME_GTC, "type_filling": self.filling_mode(),
+            "comment": comment, "type_time": mt5.ORDER_TIME_GTC, "type_filling": self.filling_mode(info),
         }
         if position:
             req["position"] = position
