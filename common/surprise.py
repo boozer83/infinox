@@ -16,7 +16,7 @@ from backtests.news_grid import exit_at
 ROOT = Path(__file__).resolve().parent.parent
 CURRENCIES = ("USD", "EUR", "GBP")
 IMPORTANCE = ("moderate", "high")
-S_MIN = 2.0
+S_MIN = 1.5       # 2026-10-24 2.0 -> 1.5 (GPT 검증: 건수 약 1.8배, 2022~24·2025~26 모두 이익 늘어남. 기록의 S로 2 이상만 따로 볼 수 있음)
 MAX_HOLD_MS = 30 * 60_000
 EXITS = {"큰이익추적 5/2.5/15분": ("큰이익추적", 5, 2.5, 15), "합산보호 2/1 30분": ("합산보호", 2, 1, 30),
          "30분 보유": ("시간", 30, None)}
