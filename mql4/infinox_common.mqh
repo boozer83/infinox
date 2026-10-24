@@ -40,7 +40,7 @@ string UrlEncode(string s)
 
 void Send(string tag, string text)
 {
-   string msg = "[" + tag + "] " + text;
+   string msg = "[MT4 · " + tag + "] " + text;   // 파이썬 봇은 [데모 · ...] / [실계좌 · ...]
    Print(msg);
    if (g_token == "" || IsTesting())
       return;
