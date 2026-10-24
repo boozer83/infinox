@@ -1,6 +1,6 @@
 #!/bin/sh
-# 틱 다운로드를 한 달씩 새 프로세스로 (메모리를 한 달치만 씀). 사용법: sh download_monthly.sh XETUSD US30 ...
-cd "$(dirname "$0")"
+# 틱 다운로드를 한 달씩 새 프로세스로 (메모리를 한 달치만 씀). 사용법: sh scripts/download_monthly.sh XETUSD US30 ...
+cd "$(dirname "$0")/.."
 export PYTHONIOENCODING=utf-8
 cur=$(date +%Y-%m)
 for s in "$@"; do

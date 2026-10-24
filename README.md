@@ -71,7 +71,7 @@ $env:MT5_TERMINAL_PATH = "C:\Program Files\Infinox MetaTrader 5 Terminal\termina
 
 ```powershell
 # 1. 연결 확인 (주문 안 함): 계좌 종류가 "데모"로 나오는지 확인
-python check_connection.py
+python scripts/check_connection.py
 
 # 2. 신호만 확인 (주문 안 함)
 python demo_trader.py --dry-run
@@ -177,7 +177,7 @@ python trend_trader.py             # 시작
 ```
 config.py             공통 설정 (종목, MT5 연결)
 indicators.py         지표 계산 (SAR, RSI, ADX, EMA)
-check_connection.py   MT5 연결 / 계좌 확인 (읽기 전용)
+scripts/check_connection.py   MT5 연결 / 계좌 확인 (읽기 전용)
 demo_trader.py        데모 관찰용 자동매매 (SAR + RSI50 + 마틴)
 trend_trader.py       데모 관찰용 자동매매 (4시간봉 추세추종)
 reports.py            수익률 계산, 일/주/월 리포트

@@ -1,11 +1,15 @@
 """MT5 연결 테스트 (읽기 전용 - 주문하지 않음)
 
 실행 전: MT5 터미널을 켜고 계좌로 로그인해 두세요.
-사용법: python check_connection.py
+사용법: python scripts/check_connection.py
 """
+import sys
+from pathlib import Path
+
 import MetaTrader5 as mt5
 
-from config import SYMBOL, mt5_init
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))   # infinox 폴더의 config
+from config import SYMBOL, mt5_init  # noqa: E402
 
 if not mt5_init():
     print("연결 실패:", mt5.last_error())

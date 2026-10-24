@@ -1,11 +1,11 @@
 # Start (or restart) the 3 bots + the report bot on the demo and/or live account.
-#   powershell -ExecutionPolicy Bypass -File bots.ps1 demo|live|all|status|stop-demo|stop-live
+#   powershell -ExecutionPolicy Bypass -File scripts\bots.ps1 demo|live|all|status|stop-demo|stop-live
 # demo: default MT5 terminal (demo account 100136645)
 # live: portable terminal C:\MT5_LIVE, symbol XAUUSD#, every bot with --live
 # Bots of the same set that are already running are stopped first, so nothing runs twice.
 param([ValidateSet("demo", "live", "all", "status", "stop-demo", "stop-live")][string]$Which = "status")
 
-$Dir = $PSScriptRoot
+$Dir = Split-Path $PSScriptRoot -Parent   # infinox 폴더 (이 파일은 scripts/ 안)
 $Bots = @("demo_trader.py", "trend_trader.py", "asia_breakout_trader.py", "report_bot.py")
 $DemoOnly = @("hedge_martin_trader.py", "news_trader.py", "sar_martin_trader.py", "trend_trader.py --symbol XETUSD", "asia_breakout_trader.py --symbol XAUEUR")   # demo account only (no --live)
 $LiveExtra = @("asia_breakout_trader.py --symbol XAUEUR")   # live account too (symbol XAUEUR#), on top of $Bots
