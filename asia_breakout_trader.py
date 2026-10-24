@@ -36,14 +36,14 @@ v2 백테스트 (backtests/asia_v2.py, 실제 틱, 2022-01 ~ 2026-10, 1만 달�
 - 증거금 부족, lot이 MAX_LOT 초과면 진입 안 함
 - 계좌 손실 한도: 평가금이 최고 잔고보다 ACCOUNT_STOP_PCT% 이상 줄면 신규 진입 중단 (<로그폴더>/risk_state.json)
 
-기록: asia_log/ (실계좌는 asia_live_log/) — trades.csv, events.log, state.json
+기록: logs/asia_log/ (실계좌는 logs/asia_live_log/) — trades.csv, events.log, state.json
 
 사용법:
   python asia_breakout_trader.py            # 데모 실행 (Ctrl+C로 종료)
   python asia_breakout_trader.py --dry-run  # 주문 없이 신호만 계산해서 출력
   python asia_breakout_trader.py --live     # 실계좌 (데모에서 충분히 확인한 뒤에만)
-  python asia_breakout_trader.py --symbol XAUEUR          # 유로 표시 금 (매직 20261024, 기록 asia_xaueur_log/)
-  python asia_breakout_trader.py --symbol XAUEUR --live   # 실계좌 (종목명 XAUEUR#, 기록 asia_xaueur_live_log/)
+  python asia_breakout_trader.py --symbol XAUEUR          # 유로 표시 금 (매직 20261024, 기록 logs/asia_xaueur_log/)
+  python asia_breakout_trader.py --symbol XAUEUR --live   # 실계좌 (종목명 XAUEUR#, 기록 logs/asia_xaueur_live_log/)
 """
 import argparse
 import functools
@@ -87,7 +87,7 @@ SYMBOL_RISK = {"XAUEUR": 0.6}         # 그 종목의 RISK_PCT (금 0.6% + XAUEU
 DEVIATION = 50             # 허용 슬리피지 (포인트, 0.50달러). 손절폭이 30$ 이상이라 여유 있게
 POLL_SEC = 1.0
 
-LOG_DIR = Path(__file__).resolve().parent / "asia_log"
+LOG_DIR = Path(__file__).resolve().parent / "logs" / "asia_log"
 TRADES_CSV = LOG_DIR / "trades.csv"
 STATE_JSON = LOG_DIR / "state.json"
 BOT_JSON = LOG_DIR / "bot_state.json"        # 오늘 처리 여부, 사이클 1단계 lot
@@ -137,7 +137,7 @@ def exit_at(d):
 
 
 def use_live_paths():
-    """실계좌 실행은 기록을 asia_live_log/에 따로 남김 (텔레그램의 [실계좌] 표시는 Trader가 붙임)"""
+    """실계좌 실행은 기록을 logs/asia_live_log/에 따로 남김 (텔레그램의 [실계좌] 표시는 Trader가 붙임)"""
     global LOG_DIR, TRADES_CSV, STATE_JSON, BOT_JSON, RISK_JSON
     LOG_DIR = LOG_DIR.parent / "asia_live_log"
     TRADES_CSV, STATE_JSON = LOG_DIR / "trades.csv", LOG_DIR / "state.json"
@@ -152,7 +152,7 @@ def use_symbol(sym, live=False):
     SYMBOL = base + "#" if live else base
     MAGIC = SYMBOL_MAGIC.get(base, MAGIC)
     RISK_PCT = SYMBOL_RISK.get(base, RISK_PCT)
-    LOG_DIR = Path(__file__).resolve().parent / f"asia_{base.lower()}{'_live' if live else ''}_log"
+    LOG_DIR = Path(__file__).resolve().parent / "logs" / f"asia_{base.lower()}{'_live' if live else ''}_log"
     TRADES_CSV, STATE_JSON = LOG_DIR / "trades.csv", LOG_DIR / "state.json"
     BOT_JSON, RISK_JSON = LOG_DIR / "bot_state.json", LOG_DIR / "risk_state.json"
     STRATEGY = f"아시아 3마틴·{base}"

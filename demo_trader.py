@@ -58,9 +58,9 @@
 - 하루 손실 한도: 오늘 이 전략의 청산 손익이 그날 시작 잔고의 DAILY_LOSS_PCT 이상 손실이면 그날 신규 진입 정지.
   지금은 꺼 둠(None) -> 마틴이 이길 때까지 5번째 진입까지 감
 - 계좌 손실 한도: 평가금이 기록된 최고 잔고보다 ACCOUNT_STOP_PCT(50%) 이상 줄면 신규 진입 중단.
-  demo_log/risk_state.json에 "halted"로 남아서 재시작해도 유지됨. 확인 후 그 파일을 지우면 다시 시작
+  logs/demo_log/risk_state.json에 "halted"로 남아서 재시작해도 유지됨. 확인 후 그 파일을 지우면 다시 시작
 
-기록 (demo_log/ 폴더): trades.csv (거래별 신호/체결/슬리피지/결과), events.log (실행 로그)
+기록 (logs/demo_log/ 폴더): trades.csv (거래별 신호/체결/슬리피지/결과), events.log (실행 로그)
 
 텔레그램 (telegram.json 설정이 있을 때, 설정법은 telegram_notify.py 참고):
 - 진입/청산 때마다 거래 내용과 오늘/이번주/이번달 수익률
@@ -130,7 +130,7 @@ POLL_SEC = 1.0
 M5_BARS = 600
 H1_BARS = 400
 
-LOG_DIR = Path(__file__).resolve().parent / "demo_log"
+LOG_DIR = Path(__file__).resolve().parent / "logs" / "demo_log"
 TRADES_CSV = LOG_DIR / "trades.csv"
 STATE_JSON = LOG_DIR / "state.json"
 RISK_JSON = LOG_DIR / "risk_state.json"
@@ -389,7 +389,7 @@ def notify_close(row):
 
 
 def use_live_paths():
-    """실계좌 실행은 기록을 live_log/에 따로 남김 (텔레그램의 [실계좌] 표시는 Trader가 붙임)"""
+    """실계좌 실행은 기록을 logs/live_log/에 따로 남김 (텔레그램의 [실계좌] 표시는 Trader가 붙임)"""
     global LOG_DIR, TRADES_CSV, STATE_JSON, RISK_JSON, WINRATE_JSON
     LOG_DIR = LOG_DIR.parent / "live_log"
     TRADES_CSV, STATE_JSON, RISK_JSON = LOG_DIR / "trades.csv", LOG_DIR / "state.json", LOG_DIR / "risk_state.json"

@@ -5,16 +5,7 @@ data/
 telegram.json
 
 # 실행 기록 / 백테스트 결과
-demo_log/
-trend_log/
-trend_live_log/
-live_log/
-asia_log/
-asia_live_log/
-news_log/
-sar_martin_log/
-report_log/
-report_live_log/
+logs/
 results/
 *.csv
 
@@ -29,7 +20,6 @@ __pycache__/
 
 # 백테스트 실행 로그
 *.log
-hedge_log/
 
 # 다른 사람 거래내역 캡처 (공개 저장소라 절대 올리지 말 것)
 다른사람거래내역/

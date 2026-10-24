@@ -8,7 +8,7 @@ backtests/sar_martin.py "2마틴 + 2연속 손절 쉬기 + 매일 초기화"와 
 - 서버 날짜가 바뀌면 묶음 초기화 (어제 손실은 확정, 시작 lot부터)
 백테스트 (2022~24 ATR 금값 비례, 1,000$ 시작 복리): 2022 -12%, 2023 -17%, 2024 +35%, 2025 +19%, 2026 +1,531%,
   최대 낙폭 43%, 최악의 날 -15%, 최대 lot 시작 lot의 2.9배 (마틴 없음: 낙폭 53%, 최악의 날 -13%)
-demo_trader.py의 함수를 그대로 쓰고 magic·기록 폴더·마틴 계산만 바꿈. 기록: sar_martin_log/
+demo_trader.py의 함수를 그대로 쓰고 magic·기록 폴더·마틴 계산만 바꿈. 기록: logs/sar_martin_log/
 
 사용법: python sar_martin_trader.py   (데모 계좌에서만)
 """

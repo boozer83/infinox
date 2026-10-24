@@ -10,7 +10,7 @@
 - 주말에도 보유 (백테스트와 같음). 데모 전용 (실계좌 옵션 없음)
 백테스트 (해마다 1만 달러, 2022~2026, 익절 5 / 목표 1% / 한도 30% / 4단계): 2022 -81%, 2023 -32%, 2024 -34%, 2025 +55%, 2026 +33%,
   최대 낙폭 85%. 캡처(9~10월 HK 계좌)와 흐름이 맞는지 보려는 관찰용
-상태: hedge_log/state.json (사이클 시작 시각·잔고·단계)
+상태: logs/hedge_log/state.json (사이클 시작 시각·잔고·단계)
 """
 import logging
 import time
@@ -37,7 +37,7 @@ NIGHT_OFF = False   # True면 SAR 단타처럼 서버 15:00~21:00(한국 21:00~0
 MAGIC = 20261020
 POLL_SEC = 1.0
 STRATEGY = "헤지 마틴"
-LOG_DIR = Path(__file__).resolve().parent / "hedge_log"
+LOG_DIR = Path(__file__).resolve().parent / "logs" / "hedge_log"
 STATE_JSON = LOG_DIR / "state.json"
 log = logging.getLogger("hedge")
 bot = None         # Trader, main()에서 설정

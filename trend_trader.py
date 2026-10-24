@@ -20,14 +20,14 @@
           demo_trader.py(매직 20261017), asia_breakout_trader.py(20261019)와 같은 계좌에서 같이 돌려도
           서로의 포지션을 건드리지 않음
 
-기록 (trend_log/ 폴더, 실계좌는 trend_live_log/): trades.csv, events.log, state.json
+기록 (logs/trend_log/ 폴더, 실계좌는 logs/trend_live_log/): trades.csv, events.log, state.json
 텔레그램: demo_trader.py와 같은 봇, 메시지 앞에 [H4 추세] 표시
 
 사용법:
   python trend_trader.py            # 실행 (Ctrl+C로 종료)
   python trend_trader.py --dry-run  # 주문 없이 신호만 계산해서 출력 (텔레그램 전송 안 함)
   python trend_trader.py --live     # 실계좌에서 실행 (데모에서 충분히 확인한 뒤에만)
-  python trend_trader.py --symbol XETUSD   # 이더리움 H4 (데모 전용, 매직 20261023, 기록 trend_xetusd_log/)
+  python trend_trader.py --symbol XETUSD   # 이더리움 H4 (데모 전용, 매직 20261023, 기록 logs/trend_xetusd_log/)
 """
 import argparse
 import logging
@@ -58,7 +58,7 @@ DEVIATION = 50
 POLL_SEC = 2.0
 BARS = 300
 
-LOG_DIR = Path(__file__).resolve().parent / "trend_log"
+LOG_DIR = Path(__file__).resolve().parent / "logs" / "trend_log"
 TRADES_CSV = LOG_DIR / "trades.csv"
 STATE_JSON = LOG_DIR / "state.json"
 SHADOW_JSON = LOG_DIR / "shadow.json"
@@ -88,7 +88,7 @@ def use_symbol(sym):
 
 
 def use_live_paths():
-    """실계좌 실행은 기록을 trend_live_log/에 따로 남김 (텔레그램의 [실계좌] 표시는 Trader가 붙임)"""
+    """실계좌 실행은 기록을 logs/trend_live_log/에 따로 남김 (텔레그램의 [실계좌] 표시는 Trader가 붙임)"""
     global LOG_DIR, TRADES_CSV, STATE_JSON, SHADOW_JSON, SHADOW_CSV
     LOG_DIR = LOG_DIR.parent / "trend_live_log"
     TRADES_CSV, STATE_JSON, SHADOW_JSON = LOG_DIR / "trades.csv", LOG_DIR / "state.json", LOG_DIR / "shadow.json"

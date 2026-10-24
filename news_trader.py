@@ -7,7 +7,7 @@
 4) 남은 쪽: 발표 HOLD_SEC초 뒤 정리. 그 전에 발표 시각 중간가 반대쪽으로 REVERT$ 되돌아오면 바로 정리
 발표 시각: 서버 시간 = 뉴욕 시간 + 7시간 (서머타임 따라 같이 바뀜) -> CPI·고용 15:30, FOMC 21:00
   날짜는 MT5 캘린더 내보내기(Common\\Files\\calendar_all.csv, mql5/ExportCalendar.mq5를 Currency 빈칸으로)에서 읽음
-목적: 발표 때 실제 체결가·스프레드·미끄러짐 측정. 매 발표 결과를 news_log/trades.csv와 텔레그램으로
+목적: 발표 때 실제 체결가·스프레드·미끄러짐 측정. 매 발표 결과를 logs/news_log/trades.csv와 텔레그램으로
 
 사용법: python news_trader.py           (데모 계좌에서만)
         python news_trader.py --dry     (앞으로 할 발표 일정만 보고 끝)
@@ -40,7 +40,7 @@ EVENTS = {"CPI m/m": "08:30", "실업률": "08:30", "연방 금리 결정": "14:
 MAGIC = 20261021
 STRATEGY = "뉴스 양방향"
 CALENDAR = Path(os.environ["APPDATA"]) / "MetaQuotes" / "Terminal" / "Common" / "Files" / "calendar_all.csv"
-LOG_DIR = Path(__file__).resolve().parent / "news_log"
+LOG_DIR = Path(__file__).resolve().parent / "logs" / "news_log"
 TRADES_CSV = LOG_DIR / "trades.csv"
 STATE_JSON = LOG_DIR / "state.json"
 FIELDS = ["event", "release", "lot", "entry_time", "buy_fill", "sell_fill", "entry_spread", "release_mid", "threshold",

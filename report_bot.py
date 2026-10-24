@@ -7,7 +7,7 @@
 기간이 리포트 시각끼리 이어져서 빠지는 거래가 없음 (금요일 밤~토요일 새벽 거래는 다음 월요일 일일·다음 주 주간에 들어감)
 손익 계산은 reports.stats와 같음 (실현손익, 수익률 = 손익 / (기간 시작 잔고 + 기간 중 입금)). MT5 거래내역은 서버시간이라 한국시간을 바꿔서 조회
 
-기록: report_log/ (실계좌는 report_live_log/) — state.json(마지막으로 보낸 날짜), events.log
+기록: logs/report_log/ (실계좌는 logs/report_live_log/) — state.json(마지막으로 보낸 날짜), events.log
 
 사용법:
   python report_bot.py           # 데모 계좌 리포트 (Ctrl+C로 종료)
@@ -38,7 +38,7 @@ STRATS = (("SAR 단타", demo_trader.MAGIC, SYMBOL), ("H4 추세", trend_trader.
           ("아시아 3마틴·XAUEUR", asia_breakout_trader.SYMBOL_MAGIC["XAUEUR"], "XAUEUR" + SFX))
 WEEKDAYS = "월화수목금토일"
 
-LOG_DIR = Path(__file__).resolve().parent / "report_log"
+LOG_DIR = Path(__file__).resolve().parent / "logs" / "report_log"
 
 
 def prev_weekday(d):
