@@ -7,6 +7,8 @@
 3. 5일 모멘텀 필터: 전일 종가 > 6거래일 전 종가면 매수만, 작으면 매도만 (같으면 거래 없음)
 4. 기준폭 U = 0.5 × 일봉 ATR(14, Wilder, 전일까지). 익절 = U, 손절 = 0.75 × U  (v2, 2026-10-21)
 5. 23:00에 보유 포지션 시장가 청산 (하루를 넘기지 않음 → 스왑·주말 갭 없음)
+   미국 휴일 조기 마감일(연방 공휴일·추수감사절 다음 날·12/24, 마지막 시세 19:44~21:44)은 19:30에 청산
+   (전에는 23:00에 장이 닫혀 있어 다음 날 01:00에 청산됨, 2022~26 금 8건 / XAUEUR 7건)
 6. 신호 강도 (v2): 돌파 봉 종가가 전일 고가 위(매수) / 전일 저가 아래(매도)면 강한 신호 가중치 1.5, 아니면 0.5
 
 자금관리 (마틴 3단계, 날짜를 넘어 이어짐):
@@ -43,16 +45,19 @@ v2 백테스트 (backtests/asia_v2.py, 실제 틱, 2022-01 ~ 2026-10, 1만 달�
 """
 import argparse
 import csv
+import functools
 import json
 import logging
 import math
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import MetaTrader5 as mt5
 import numpy as np
 import pandas as pd
+from pandas.tseries.holiday import (AbstractHolidayCalendar, Holiday, USLaborDay, USMartinLutherKingJr,
+                                    USMemorialDay, USPresidentsDay, USThanksgivingDay, nearest_workday)
 
 from config import CONTRACT, SYMBOL, mt5_init
 from reports import ServerClock, summary_line
@@ -63,6 +68,7 @@ RANGE_FROM = "01:05"       # 아시아 레인지 시작 봉
 RANGE_UNTIL = "09:00"      # 이 시각 전에 시작한 봉까지 레인지
 ENTRY_UNTIL = "18:00"      # 이 시각 전에 시작한 봉의 돌파만 진입 (마지막 17:55 봉)
 EXIT_AT = "23:00"          # 보유 포지션 시장가 청산
+EARLY_EXIT_AT = "19:30"    # 미국 휴일 조기 마감일 청산 (가장 이른 마감 19:44)
 MIN_RANGE_BARS = 50        # 레인지 봉이 이보다 적으면 (휴장일 등) 그날 거래 없음
 ATR_MULT = 0.5             # 기준폭 U = 일봉 ATR(14) × 0.5
 TP_RATIO = 1.0             # 익절 = U × 1.0
@@ -112,6 +118,25 @@ def hm(s):
 
 def minutes(ts):
     return ts.hour * 60 + ts.minute
+
+
+class EarlyCloseCalendar(AbstractHolidayCalendar):
+    """금이 일찍 닫힌 미국 휴일 (2022~26 데이터와 일치. 콜럼버스·재향군인의 날은 정상 마감)"""
+    rules = [USMartinLutherKingJr, USPresidentsDay, USMemorialDay,
+             Holiday("Juneteenth", month=6, day=19, observance=nearest_workday),
+             Holiday("Independence Day", month=7, day=4, observance=nearest_workday),
+             USLaborDay, USThanksgivingDay]
+
+
+@functools.lru_cache(maxsize=32)
+def early_close_day(d):
+    hol = set(EarlyCloseCalendar().holidays(date(d.year, 1, 1), date(d.year, 12, 31)).date)
+    thanks = [x for x in hol if x.month == 11]
+    return d in hol or (bool(thanks) and d == thanks[0] + timedelta(days=1)) or (d.month == 12 and d.day == 24)
+
+
+def exit_at(d):
+    return EARLY_EXIT_AT if early_close_day(d) else EXIT_AT
 
 
 def account_line():
@@ -328,7 +353,7 @@ def place(side, lot, level, u, w, info_row):
     return row
 
 
-def close_position(p, why="time exit"):
+def close_position(p, why="time exit", at=EXIT_AT):
     tick = mt5.symbol_info_tick(SYMBOL)
     is_buy = p.type == mt5.POSITION_TYPE_BUY
     req = {
@@ -339,9 +364,9 @@ def close_position(p, why="time exit"):
     }
     res = mt5.order_send(req)
     ok = res is not None and res.retcode == mt5.TRADE_RETCODE_DONE
-    log.info(f"{EXIT_AT} 청산 {'완료' if ok else '실패'}: 티켓 {p.ticket} {res.retcode if res else mt5.last_error()}")
+    log.info(f"{at} 청산 {'완료' if ok else '실패'}: 티켓 {p.ticket} {res.retcode if res else mt5.last_error()}")
     if not ok:
-        send(f"❗ {EXIT_AT} 청산 실패: 티켓 {p.ticket} {res.retcode if res else mt5.last_error()}")
+        send(f"❗ {at} 청산 실패: 티켓 {p.ticket} {res.retcode if res else mt5.last_error()}")
 
 
 def find_close(ticket):
@@ -369,7 +394,7 @@ def append_row(row):
 
 def notify_close(row):
     profit = float(row["profit"])
-    icon = {"TP": "✅ 익절", "SL": "❌ 손절", "TIME": f"⏹ {EXIT_AT} 청산"}.get(row["result"], "⏹ 청산")
+    icon = {"TP": "✅ 익절", "SL": "❌ 손절", "TIME": "⏹ 시간 청산"}.get(row["result"], "⏹ 청산")
     nxt = martin_level()
     log.info(f"청산 {row['result']} @ {row['close_price']} 손익 {profit} -> 다음 진입 {nxt + 1}단계")
     send(f"{icon} {row.get('side', '')} {row.get('lot', '')} lot\n"
@@ -408,6 +433,8 @@ def main():
             aim = RISK_PCT * w * SL_RATIO * MARTIN_MULT ** lvl
             msg += (f"\n{lvl + 1}단계 {name} {lot} lot (손절 시 잔고의 {risk:.2f}%, 목표 {aim:.2f}%"
                     f"{' — 최소 lot 때문에 큼' if risk > aim * 1.3 else ''})")
+    if early_close_day(now.date()):
+        msg += f"\n오늘은 미국 휴일 조기 마감일 -> {EARLY_EXIT_AT}에 청산"
     log.info(f"시작: 계좌 {acc.login} ({acc.server}, {kind}) 잔고 {acc.balance}, 다음 진입 마틴 {lvl + 1}단계. {msg}"
              f"{' [DRY-RUN]' if args.dry_run else ''}")
     send(f"▶️ 자동매매 시작 ({kind} {acc.login})\n전략: {STRATEGY_DESC}\n다음 진입 마틴 {lvl + 1}단계\n{msg}\n"
@@ -444,10 +471,11 @@ def main():
                     open_row = None
 
 
-            # 23:00 시간 청산 (실패하면 1분 뒤 재시도)
-            if minutes(now) >= hm(EXIT_AT) and not args.dry_run and time.time() - last_close_try > 60:
+            # 23:00 시간 청산, 조기 마감일은 19:30 (실패하면 1분 뒤 재시도)
+            at = exit_at(today)
+            if minutes(now) >= hm(at) and not args.dry_run and time.time() - last_close_try > 60:
                 for p in my_positions():
-                    close_position(p)
+                    close_position(p, at=at)
                     last_close_try = time.time()
 
             m5 = rates(mt5.TIMEFRAME_M5, 400)
