@@ -6,7 +6,8 @@
 3) 발표 뒤 QUIET_SEC초 안에 판단이 안 나면 양쪽 정리
 4) 남은 쪽: 발표 HOLD_SEC초 뒤 정리. 그 전에 발표 시각 중간가 반대쪽으로 REVERT$ 되돌아오면 바로 정리
 발표 시각: 서버 시간 = 뉴욕 시간 + 7시간 (서머타임 따라 같이 바뀜) -> CPI·고용 15:30, FOMC 21:00
-  날짜는 MT5 캘린더 내보내기(Common\\Files\\calendar_all.csv, mql5/ExportCalendar.mq5를 Currency 빈칸으로)에서 읽음
+  날짜는 MT5 캘린더 내보내기(Common\\Files\\calendar_all.csv, mql5/ExportCalendar.mq5를 Currency 빈칸으로)
+  + ForexFactory 주간 일정(common/news_calendar.py)에서 읽음 (한쪽이 오래되거나 빠져도 다른 쪽으로)
 목적: 발표 때 실제 체결가·스프레드·미끄러짐 측정. 매 발표 결과를 logs/news_log/trades.csv와 텔레그램으로
 
 사용법: python news_trader.py           (데모 계좌에서만)
@@ -26,6 +27,7 @@ import MetaTrader5 as mt5
 import numpy as np
 import pandas as pd
 
+from common.news_calendar import ff_events, ff_update
 from common.trader import Trader, append_csv, side_of
 from config import SYMBOL
 
@@ -37,6 +39,7 @@ HOLD_SEC = 900
 REVERT = 2.0
 MAX_SPREAD = 2.0          # 진입 직전 스프레드가 이보다 넓으면 이번 발표는 건너뜀
 EVENTS = {"CPI m/m": "08:30", "실업률": "08:30", "연방 금리 결정": "14:00"}   # 캘린더 이름 -> 뉴욕 발표 시각
+FF_EVENTS = {"CPI m/m": "CPI m/m", "Unemployment Rate": "실업률", "Federal Funds Rate": "연방 금리 결정"}   # ForexFactory 이름
 MAGIC = 20261021
 STRATEGY = "뉴스 양방향"
 CALENDAR = Path(os.environ["APPDATA"]) / "MetaQuotes" / "Terminal" / "Common" / "Files" / "calendar_all.csv"
@@ -54,20 +57,30 @@ bot = None         # Trader, main()에서 설정
 
 def schedule(now):
     """앞으로 2주 안 발표 [(서버 시각, 이름)]. 캘린더 파일이 없거나 오래되면 경고 문구도 같이"""
-    if not CALENDAR.exists():
-        return [], f"캘린더 파일 없음 ({CALENDAR})"
-    c = pd.read_csv(CALENDAR, encoding="cp949")
-    c = c[(c.currency == "USD") & (c.importance == "high") & c.event.isin(list(EVENTS))]
-    out = {}
-    for day, name in zip(pd.to_datetime(c.time, format="%Y.%m.%d %H:%M").dt.date, c.event):
-        hh, mm = map(int, EVENTS[name].split(":"))
-        ny = datetime(day.year, day.month, day.day, hh, mm, tzinfo=NY)
-        server = (ny + timedelta(hours=7)).replace(tzinfo=None)   # 서버 = 뉴욕 + 7시간
+    out, warns = {}, []
+    if CALENDAR.exists():
+        c = pd.read_csv(CALENDAR, encoding="cp949")
+        c = c[(c.currency == "USD") & (c.importance == "high") & c.event.isin(list(EVENTS))]
+        for day, name in zip(pd.to_datetime(c.time, format="%Y.%m.%d %H:%M").dt.date, c.event):
+            hh, mm = map(int, EVENTS[name].split(":"))
+            ny = datetime(day.year, day.month, day.day, hh, mm, tzinfo=NY)
+            server = (ny + timedelta(hours=7)).replace(tzinfo=None)   # 서버 = 뉴욕 + 7시간
+            if now - timedelta(minutes=20) < server < now + timedelta(days=14):
+                out.setdefault(server, name)                         # CPI·고용이 같은 날이면 한 번만
+        age = (time.time() - CALENDAR.stat().st_mtime) / 86400
+        if age > 7:
+            warns.append(f"MT5 캘린더 파일이 {age:.0f}일 지났습니다. MT5에서 ExportCalendar를 다시 실행하세요")
+    else:
+        warns.append(f"MT5 캘린더 파일 없음 ({CALENDAR})")
+    if w := ff_update():
+        warns.append(w)
+    f = ff_events()
+    f = f[(f.currency == "USD") & f.event.isin(list(FF_EVENTS))]
+    for server, name in zip(f.time, f.event):
+        server = server.to_pydatetime()
         if now - timedelta(minutes=20) < server < now + timedelta(days=14):
-            out.setdefault(server, name)                         # CPI·고용이 같은 날이면 한 번만
-    age = (time.time() - CALENDAR.stat().st_mtime) / 86400
-    warn = f"캘린더 파일이 {age:.0f}일 지났습니다. MT5에서 ExportCalendar를 다시 실행하세요" if age > 7 else ""
-    return sorted(out.items()), warn
+            out.setdefault(server, FF_EVENTS[name])
+    return sorted(out.items()), " / ".join(warns)
 
 
 def mid():

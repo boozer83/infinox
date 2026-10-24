@@ -222,6 +222,7 @@ python trend_trader.py --symbol XETUSD   # 이더리움 (데모 전용, 매직 2
   SAR 전환마다 2배로 1개씩 추가(최대 4단계), 사이클 합계 +1%면 전부 청산, -30%면 전부 손절. 다른 계좌(HK MARTIN) 캡처와 흐름이 맞는지 보려는 용도이고, 백테스트 최대 낙폭 85%입니다.
 - **뉴스 양방향** (`news_trader.py`): 미국 CPI·고용·FOMC 금리 결정 발표 30초 전 양방향 진입 → 발표가 0.05% 움직이면 반대쪽 청산 → 5분 무반응이면 정리 → 남은 쪽 15분 또는 2$ 되돌림에 정리.
   발표 일정은 MT5 캘린더 내보내기(`mql5/ExportCalendar.mq5`, `Common\Files\calendar_all.csv`)에서 읽으므로 **매주 ExportCalendar를 실행**해야 합니다. `python news_trader.py --dry`로 다음 2주 일정을 확인합니다.
+  ForexFactory 주간 일정(`common/news_calendar.py`, HK 패널 뉴스 목록과 같은 곳)도 6시간마다 받아 `data/ff_calendar.csv`에 쌓고 같이 씀 (MT5 캘린더에 빠지는 영국·유럽 지표 보완). 헤지 마틴 뉴스 필터도 두 일정을 합쳐서 봄
   실제치 수신 지연 측정: `mql5/CalendarLive.mq5` (MT5 서비스, 주문 없음)가 캘린더에 실제치가 들어오는 순간을 `Common\Files\calendar_live.csv`에 기록. 요약은 `python scripts/calendar_latency.py`
 - **단타 2마틴** (`sar_martin_trader.py`): SAR 단타와 같은 진입·청산에, 지면 다음 lot을 진 금액을 익절 한 번에 딱 되찾는 크기로 (2마틴까지). 오늘 2연속 손절이면 그날 쉼.
 

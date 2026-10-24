@@ -1,7 +1,7 @@
 """데모 관찰용 헤지 마틴 (HK MARTIN 구조 재현, backtests/hedge_martin_ticks.py의 START_SIG + CONTINUE 모드와 같은 규칙)
 
 - 사이클 시작: SAR 단타(demo_trader)와 같은 신호 봉(5분봉 SAR 전환 + RSI50 + 1시간봉 SAR + 시간/ATR/과열 필터)이 완성되면
-  매수·매도를 같은 lot(L0)으로 동시 진입. 중요 지표(USD/EUR/GBP moderate 이상) 앞뒤 NEWS_MIN분이면 시작 안 함
+  매수·매도를 같은 lot(L0)으로 동시 진입. 중요 지표(USD/EUR/GBP moderate 이상, MT5 캘린더 + ForexFactory) 앞뒤 NEWS_MIN분이면 시작 안 함
   L0 = 사이클 시작 잔고 1,000달러당 LOT_PER_1000 lot (0.01 단위 내림, 최소 0.01)
 - 모든 포지션은 진입가 ± TP_USD에 서버 익절, 손절 없음 (진 쪽은 들고 감)
 - 사이클 중 5분봉 SAR이 전환될 때마다 그 방향에 열린 포지션이 없으면 다음 단계 lot(L0 x 2^단계)으로 1개 진입 (최대 MAX_LEVEL)
@@ -22,7 +22,7 @@ import numpy as np
 import pandas as pd
 
 import demo_trader as dt
-from backtests.hedge_martin_ticks import near_news
+from common.news_calendar import near_news
 from common.trader import Trader, load_json, save_json, side_of, side_name
 from config import SYMBOL
 from indicators import atr, psar
@@ -102,7 +102,7 @@ def start_ok(m5, h1, now):
         return 0, "ATR 급변동"
     if ov := dt.overextended(m5, side):
         return 0, f"과열 ({ov})"
-    if near_news(pd.Series([pd.Timestamp(bar) + pd.Timedelta(minutes=5)]))[0]:
+    if near_news(pd.Timestamp(bar) + pd.Timedelta(minutes=5), NEWS_MIN):
         return 0, f"뉴스 앞뒤 {NEWS_MIN}분"
     return side, None
 
