@@ -36,9 +36,11 @@ NEWS_MIN = 30
 NIGHT_OFF = False   # True면 SAR 단타처럼 서버 15:00~21:00(한국 21:00~03:00) 시작 안 함. 2026-10-22 끔 (밤에도 시작)
 MAGIC = 20261020
 POLL_SEC = 1.0
+RETRY_SEC = 5       # 사이클 청산이 실패하면 이 간격으로 다시
 STRATEGY = "헤지 마틴"
 LOG_DIR = Path(__file__).resolve().parent / "logs" / "hedge_log"
 STATE_JSON = LOG_DIR / "state.json"
+SIGNAL_JSON = LOG_DIR / "signal_state.json"
 log = logging.getLogger("hedge")
 bot = None         # Trader, main()에서 설정
 
@@ -48,9 +50,11 @@ def save_state(st):
 
 
 def realized(since):
-    """since: 서버 시각 문자열. 그 뒤로 이 봇이 청산한 손익 합계"""
+    """since: 서버 시각 문자열. 그 뒤로 이 봇이 청산한 손익 합계 (이력 조회 실패면 None)"""
     t0 = int(pd.Timestamp(since).tz_localize("UTC").timestamp())
-    deals = mt5.history_deals_get(t0, t0 + 60 * 86400) or ()
+    deals = mt5.history_deals_get(t0, t0 + 60 * 86400)
+    if deals is None:
+        return None
     return sum(d.profit + d.commission + d.swap for d in deals if d.magic == MAGIC and d.entry == mt5.DEAL_ENTRY_OUT)
 
 
@@ -66,14 +70,18 @@ def open_pos(side, lot, level):
     return True
 
 
-def close_all(why):
-    for p in bot.positions():
-        bot.close(p, f"HM {why}", f"사이클 청산 ({why})")
+def close_all(pos, why):
+    """전부 시장가 청산 시도. 사이클은 정상 조회로 포지션이 0개인 걸 확인한 뒤에만 끝냄 (메인 루프가 RETRY_SEC마다 다시)"""
+    for p in pos:
+        dt.close_retry(p, f"HM {why}", f"사이클 청산 ({why})")
 
 
 def end_cycle(st, why):
     time.sleep(1)
     total = realized(st["since"])
+    if total is None:
+        total = 0.0
+        log.warning("사이클 끝: 이력 조회 실패로 합계 모름")
     icon = {"target": "✅", "limit": "🛑", "tp": "✅", "max": "⚠️"}.get(why, "")
     msg = {"target": f"사이클 목표 +{TARGET:.0%} 도달", "limit": f"사이클 손실 한도 -{LIMIT:.0%}",
            "tp": "포지션 모두 익절", "max": "최대 단계 다 쓰고 모두 익절"}.get(why, why)
@@ -118,34 +126,79 @@ def main():
     log.info(f"시작: 계좌 {acc.login} 잔고 {acc.balance}, {desc}, 이어받은 상태 {st}")
     bot.send(f"▶️ 데모 시작 ({acc.login})\n전략: {desc}\n시작 lot {lot0(acc.balance)} (1,000$당 {LOT_PER_1000})"
              + (f"\n진행 중 사이클 이어받음: L{st['level']}" if st else ""))
-    last_bar = None
+    dt.bot = bot                                       # dt.my_positions / fresh_tick / close_retry가 이 봇(매직)으로 동작
+    dt.lock(LOG_DIR.name)
+    sig = load_json(SIGNAL_JSON)                       # 마지막으로 처리한 봉 (재시작 때 같은 봉으로 다시 시작·추가 안 함)
+    last_bar = pd.Timestamp(sig["last_bar"]) if sig.get("last_bar") else None
+    last_retry, last_warn = 0.0, 0.0
     with bot.running("⏸ 종료 (열린 포지션은 서버 익절만 걸려 있음, 손절 없음)"):
         while True:
             now = bot.keep_alive()
-            pos = bot.positions()
-            if st:
+            pos = dt.my_positions()
+            if pos is None:                            # 조회 실패를 '포지션 없음'으로 보지 않음: 이 루프는 판단·주문 안 함
+                if time.time() - last_warn > 60:
+                    last_warn = time.time()
+                    log.warning(f"포지션 조회 실패 ({mt5.last_error()}), 이번 루프는 쉼")
+                time.sleep(POLL_SEC)
+                continue
+            if st.get("closing"):                      # 청산 중: 포지션이 정상 조회로 0개가 될 때까지 다시 청산, 그 뒤에 사이클 끝
+                if pos:
+                    if time.time() - last_retry > RETRY_SEC:
+                        last_retry = time.time()
+                        close_all(pos, st["closing"])
+                    time.sleep(POLL_SEC)
+                    continue
+                st = end_cycle(st, st["closing"])
+                save_state(st)
+            elif st:
                 real = realized(st["since"])
+                if real is None:                       # 이력 조회 실패: 목표·한도 판단 안 함
+                    time.sleep(POLL_SEC)
+                    continue
                 total = real + sum(p.profit + p.swap for p in pos)
-                if pos and total >= TARGET * st["start_bal"]:
-                    close_all("target")
-                    st = end_cycle(st, "target")
-                elif pos and total <= -LIMIT * st["start_bal"]:
-                    close_all("limit")
-                    st = end_cycle(st, "limit")
-                elif not pos and (real >= TARGET * st["start_bal"] or st["level"] >= MAX_LEVEL):
+                if pos and (total >= TARGET * st["start_bal"] or total <= -LIMIT * st["start_bal"]):
+                    st["closing"] = "target" if total > 0 else "limit"
+                    save_state(st)
+                    last_retry = time.time()
+                    close_all(pos, st["closing"])
+                    time.sleep(POLL_SEC)
+                    continue
+                if not pos and (real >= TARGET * st["start_bal"] or st["level"] >= MAX_LEVEL):
                     st = end_cycle(st, "tp" if real >= TARGET * st["start_bal"] else "max")
-                if not st:
                     save_state(st)
             m5 = bot.rates(mt5.TIMEFRAME_M5, dt.M5_BARS)
             if m5 is not None and m5.time.iat[-1] != last_bar:
+                h1 = None
+                if not st:                             # 1시간봉 조회 실패·부족이면 이 봉은 다음 루프에서 다시 (예외로 꺼지지 않게)
+                    h1 = bot.rates(mt5.TIMEFRAME_H1, dt.H1_BARS)
+                    bar_end = m5.time.iat[-1] + pd.Timedelta(minutes=5)
+                    if h1 is None or (h1.time + pd.Timedelta(hours=1) <= bar_end).sum() < 50:
+                        if time.time() - last_warn > 60:
+                            last_warn = time.time()
+                            log.warning(f"1시간봉 조회 실패 ({mt5.last_error()}), 다시 시도")
+                        time.sleep(POLL_SEC)
+                        continue
                 last_bar = m5.time.iat[-1]
+                save_json(SIGNAL_JSON, {"last_bar": str(last_bar)})
                 up = psar(m5.high.values, m5.low.values)
                 flip = (1 if up[-1] else -1) if up[-1] != up[-2] else 0
+
+                def stale():
+                    """신호 봉 마감 + ENTRY_LATE_SEC 넘었거나 시세가 멈췄으면 이유 (주문 직전에 부름)"""
+                    late = (bot.clock.now() - (last_bar + pd.Timedelta(minutes=5))).total_seconds()
+                    if late > dt.ENTRY_LATE_SEC:
+                        return f"신호 봉 마감 {late:.0f}초 뒤 (재시작·멈춤)"
+                    if not dt.fresh_tick():
+                        return f"시세 멈춤 / 연결 끊김 (틱 {dt.TICK_FRESH_SEC}초 넘게 없음)"
+                    return None
+
                 if not st:
-                    h1 = bot.rates(mt5.TIMEFRAME_H1, dt.H1_BARS)
                     side, why = start_ok(m5, h1, now)
                     if why:
                         log.info(f"신호 있지만 시작 안 함: {why}")
+                    if side and (why := stale()):
+                        log.info(f"신호 있지만 시작 안 함: {why}")
+                        side = 0
                     if side:
                         bal = mt5.account_info().balance
                         l0 = lot0(bal)
@@ -156,7 +209,11 @@ def main():
                         open_pos(-1, l0, 0)
                         bot.send(f"🔀 사이클 시작: 매수·매도 {l0} lot 동시 진입 (SAR 단타 신호 {side_name(side)})\n"
                                  f"목표 +{TARGET * bal:,.2f}$ / 한도 -{LIMIT * bal:,.2f}$\n{bot.account_line()}")
-                elif flip and st["level"] < MAX_LEVEL and not any(side_of(p) == flip for p in bot.positions()):
+                elif flip and st["level"] < MAX_LEVEL and not any(side_of(p) == flip for p in pos):
+                    if why := stale():
+                        log.info(f"SAR 전환 추가 안 함: {why}")
+                        time.sleep(POLL_SEC)
+                        continue
                     st["level"] += 1
                     lot = round(st["l0"] * 2 ** st["level"], 2)
                     save_state(st)

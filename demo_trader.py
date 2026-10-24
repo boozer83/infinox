@@ -73,6 +73,9 @@
   python demo_trader.py --live     # 실계좌에서 실행 (데모에서 충분히 확인한 뒤에만)
 """
 import argparse
+import csv
+import ctypes
+import json
 import logging
 import time
 from datetime import datetime, timezone
@@ -127,6 +130,9 @@ ACCOUNT_STOP_PCT = 50.0   # 계좌 손실 한도 (최고 잔고 대비 평가금
 MAGIC = 20261017
 DEVIATION = 30            # 허용 슬리피지 (포인트, 0.30달러)
 POLL_SEC = 1.0
+ENTRY_LATE_SEC = 60       # 신호 봉 마감보다 이만큼 늦으면 진입 안 함 (재시작·멈춤 뒤 지난 신호로 들어가지 않게)
+TICK_FRESH_SEC = 30       # 진입 전 틱이 이 안에 들어왔어야 함
+RETRY_SEC = 5             # 반대 콩 청산 재시도, SL/TP 확인, 계좌 손실 한도 감시 간격
 M5_BARS = 600
 H1_BARS = 400
 
@@ -330,10 +336,105 @@ def open_virtual(wr, side, bar):
     log.info(f"승률 쉬기 중 (최근 {n}건 {rate:.1f}%) -> 가상 {'매수' if side == 1 else '매도'} @ {entry}")
 
 
+def my_positions():
+    """이 봇 포지션 목록, 조회 실패면 None (bot.positions()는 실패도 빈 목록이라 '포지션 없음'과 구분 안 됨)"""
+    p = mt5.positions_get(symbol=bot.symbol)
+    return None if p is None else [x for x in p if x.magic == bot.magic]
+
+
+def fresh_tick():
+    """터미널이 서버에 연결돼 있고 틱이 TICK_FRESH_SEC 안에 들어왔으면 True"""
+    ti, t = mt5.terminal_info(), mt5.symbol_info_tick(bot.symbol)
+    if ti is None or not ti.connected or t is None or not t.time_msc:
+        return False
+    tick_time = datetime.fromtimestamp(t.time_msc / 1000, timezone.utc).replace(tzinfo=None)
+    return abs((bot.clock.now() - tick_time).total_seconds()) <= TICK_FRESH_SEC   # 시계가 어긋나 미래 틱으로 보여도 거름
+
+
+_mutex = None
+
+
+def lock(name=None):
+    """같은 기록 폴더(데모 / 실계좌 / 2마틴 / 헤지)로 두 개가 동시에 돌지 않게: 윈도우 이름 있는 뮤텍스 (index_trader.lock과 같음)"""
+    global _mutex
+    name = name or LOG_DIR.name
+    k = ctypes.WinDLL("kernel32", use_last_error=True)
+    k.CreateMutexW.restype = ctypes.c_void_p
+    k.CreateMutexW.argtypes = [ctypes.c_void_p, ctypes.c_bool, ctypes.c_wchar_p]
+    h = k.CreateMutexW(None, False, f"Local\\infinox_sar_{name}")
+    if not h:
+        raise SystemExit(f"잠금 만들기 실패 ({ctypes.get_last_error()})")
+    if ctypes.get_last_error() == 183:                # ERROR_ALREADY_EXISTS
+        raise SystemExit(f"이미 실행 중 ({name}). 중복 실행 안 함")
+    _mutex = h
+
+
+def row_from(p, signal_bar="", signal_price=""):
+    """실제 포지션으로 기록용 row (이어받기·부분 체결·응답 실패 뒤 생긴 포지션)"""
+    return {"signal_bar": signal_bar, "side": "BUY" if side_of(p) == 1 else "SELL", "level": "", "lot": p.volume,
+            "signal_price": signal_price, "fill_price": p.price_open, "sl": p.sl, "tp": p.tp, "ticket": p.ticket}
+
+
+_close_fail_sent = set()
+
+
+def close_retry(p, comment, what):
+    """청산 주문 (닫힐 때까지 부른 쪽이 RETRY_SEC마다 다시 부름). 실패 알림은 티켓마다 한 번만"""
+    f = bot.deal(-side_of(p), p.volume, comment, position=p.ticket)
+    code = f.res.retcode if f.res else mt5.last_error()
+    log.info(f"{what} {'완료' if f.ok else '실패'}: 티켓 {p.ticket} {code}")
+    if not f.ok and p.ticket not in _close_fail_sent:
+        _close_fail_sent.add(p.ticket)
+        bot.send(f"❗ {what} 실패: 티켓 {p.ticket} {code}. 닫힐 때까지 {RETRY_SEC}초마다 다시 시도")
+    return f.ok
+
+
+_protect_sent = set()
+
+
+def protect(pos):
+    """서버 SL/TP가 빠진 포지션에 진입가 기준 SL/TP를 다시 걸고, 이미 SL을 넘어간 가격이면 시장가 청산"""
+    info, t = mt5.symbol_info(bot.symbol), mt5.symbol_info_tick(bot.symbol)
+    if info is None or t is None:
+        return
+    for p in pos:
+        if p.sl and p.tp:
+            continue
+        s = side_of(p)
+        sl = p.sl or round(p.price_open - SL_USD * s, info.digits)
+        tp = p.tp or round(p.price_open + TP_USD * s, info.digits)
+        px = t.bid if s == 1 else t.ask
+        if (px - sl) * s <= 0:                        # 이미 손절선 너머
+            close_retry(p, "no sl", "SL 없는 포지션 손절")
+            continue
+        if (tp - px) * s <= 0:                        # 이미 익절선 너머
+            close_retry(p, "no tp", "TP 없는 포지션 익절")
+            continue
+        r = mt5.order_send({"action": mt5.TRADE_ACTION_SLTP, "symbol": bot.symbol, "position": p.ticket,
+                            "sl": sl, "tp": tp, "magic": bot.magic})
+        ok = r is not None and r.retcode == mt5.TRADE_RETCODE_DONE
+        log.warning(f"SL/TP 빠진 포지션 {p.ticket}: SL {sl} TP {tp} 다시 걸기 {'완료' if ok else '실패'} "
+                    f"({r.retcode if r else mt5.last_error()})")
+        if p.ticket not in _protect_sent:
+            _protect_sent.add(p.ticket)
+            bot.send(f"⚠️ 포지션 {p.ticket}에 서버 SL/TP가 없어서 다시 걸었어요 (SL {sl} / TP {tp}, {'완료' if ok else '실패, 다시 시도'})")
+
+
 def place(side, lot, level, signal_bar, signal_price):
     f = bot.open(side, lot, f"SAR RSI50 H1 L{level}", sl_dist=SL_USD, tp_dist=TP_USD)
+    time.sleep(0.5)
+    pos = my_positions()
     if f is None:
+        if pos:                                       # 응답은 실패(부분 체결·응답 유실)인데 실제로는 포지션이 생김
+            log.warning(f"주문 응답은 실패지만 포지션이 있음 -> 이어받음 {[p.ticket for p in pos]}")
+            bot.send(f"⚠️ 주문 응답은 실패였지만 포지션이 생겨서 이어받습니다 ({pos[0].volume} lot @ {pos[0].price_open})")
+            return row_from(pos[0], signal_bar, signal_price)
         return None
+    mine = [p for p in (pos or ()) if p.ticket == f.res.order]
+    if mine and abs(mine[0].volume - lot) > 1e-9:     # 일부만 체결
+        log.warning(f"요청 {lot} lot 중 {mine[0].volume} lot만 체결")
+        lot = mine[0].volume
+    unverified = not mine                             # 조회 실패·아직 안 보임: 메인 루프가 다음 정상 조회 때 실제 lot·체결가로 맞춤
     fill, sl, tp = f.fill, f.sl, f.tp
     spread = f.tick.ask - f.tick.bid
     # 슬리피지: 신호봉 종가(Bid) 대비 얼마나 불리하게 체결됐는지 (스프레드는 따로 기록하므로 제외, +가 불리)
@@ -344,6 +445,9 @@ def place(side, lot, level, signal_bar, signal_price):
         "fill_price": fill, "slippage": round((bid_equiv - signal_price) * side, 3),
         "spread": round(spread, 3), "sl": sl, "tp": tp, "ticket": f.res.order,
     }
+    if unverified:
+        row["unverified"] = True
+        log.warning(f"주문 뒤 포지션 {f.res.order}를 아직 확인 못 함 (조회 실패·지연), 다음 조회 때 실제 lot·체결가로 맞춤")
     log.info(f"진입 {row['side']} {lot}lot ({level_text(level)}) @ {fill} "
              f"(신호봉 종가 {signal_price}, SL {sl}, TP {tp}, 스프레드 {row['spread']})")
     bot.send(f"{'🟢 매수' if side == 1 else '🔴 매도'} 진입 {lot} lot ({level_text(level)})\n"
@@ -354,16 +458,55 @@ def place(side, lot, level, signal_bar, signal_price):
     return row
 
 
-def check_closed(open_row, wr):
-    """진입했던 포지션이 닫혔으면 기록·알림하고 None, 아니면 그대로"""
-    if open_row and not any(p.ticket == open_row["ticket"] for p in bot.positions()):
+def recorded(ticket):
+    """trades.csv에 이 티켓 기록이 이미 있는지 (기록 뒤 상태 저장 전에 꺼졌던 경우)"""
+    if not TRADES_CSV.exists():
+        return False
+    with open(TRADES_CSV, encoding="utf-8-sig") as fh:
+        return any(r.get("ticket") == str(ticket) for r in csv.DictReader(fh))
+
+
+def check_closed(open_row, wr, pos):
+    """진입했던 포지션이 닫혔으면 기록·알림하고 None, 아니면 그대로. pos = 방금 조회한 실제 포지션 (조회 성공한 것만)"""
+    if open_row and not any(p.ticket == open_row["ticket"] for p in pos):
         c = bot.find_close(open_row["ticket"], CLOSE_REASONS)
         if c:
+            if recorded(open_row["ticket"]):
+                return None
+            if open_row.pop("unverified", None):          # 체결을 확인 못 한 채 닫힘: 진입 체결 이력으로 lot·체결가
+                ins = [d for d in (mt5.history_deals_get(position=open_row["ticket"]) or ()) if d.entry == mt5.DEAL_ENTRY_IN]
+                if ins:
+                    vol = sum(d.volume for d in ins)
+                    open_row.update(lot=round(vol, 2), fill_price=round(sum(d.price * d.volume for d in ins) / vol, 2))
             open_row.update(c)
             append_csv(TRADES_CSV, FIELDS, open_row)
             notify_close(open_row)
             record_result(wr, float(open_row["profit"]) > 0, "실제")
             return None
+    return open_row
+
+
+def settle(open_row, extra, wr, pos):
+    """닫힌 포지션 기록 (기록 중인 것 + 더 있는 것 전부), 응답 뒤 조회 실패로 확인 못 한 체결 대사, 새로 보인 포지션 이어받기"""
+    open_row = check_closed(open_row, wr, pos)
+    for t, r in list(extra.items()):
+        if check_closed(r, wr, pos) is None:
+            extra.pop(t)
+    if open_row and open_row.get("unverified"):
+        mine = [p for p in pos if p.ticket == open_row["ticket"]]
+        if mine:
+            p = mine[0]
+            open_row.update(lot=p.volume, fill_price=p.price_open, sl=p.sl, tp=p.tp)
+            open_row.pop("unverified")
+            log.info(f"체결 확인: 티켓 {p.ticket} {p.volume}lot @ {p.price_open}")
+    if open_row is None and pos:
+        p = pos[0]
+        open_row = extra.pop(p.ticket, None) or row_from(p)
+        log.info(f"포지션 이어받음: 티켓 {p.ticket} {open_row['side']} {p.volume}lot @ {p.price_open}")
+    for p in pos:
+        if open_row and p.ticket != open_row["ticket"] and p.ticket not in extra:
+            extra[p.ticket] = row_from(p)
+            log.warning(f"포지션이 더 있음: 티켓 {p.ticket} {p.volume}lot @ {p.price_open} (따로 기록)")
     return open_row
 
 
@@ -431,42 +574,107 @@ def main():
     if not args.dry_run:
         bot.warn_algo_off()
 
-    # 이전 실행에서 열어 둔 포지션이 있으면 이어서 기록
-    open_row = bot.adopt_position()
+    # 중복 실행 막기 + 이전 실행 상태: 마지막으로 처리한 봉, 기록 중이던 포지션 (꺼져 있는 동안 닫혔으면 이력으로 기록)
+    sig_json = LOG_DIR / "signal_state.json"
+    if not args.dry_run:
+        lock()
+    sst = load_json(sig_json)
+    saved_bar = pd.Timestamp(sst["last_bar"]) if sst.get("last_bar") else None
+    open_row = sst.get("open_row") or None
+    extra = {int(k): v for k, v in (sst.get("extra") or {}).items()}   # 기록 중인 것 말고 더 있는 포지션 (티켓 -> row)
+    if open_row is None:
+        open_row = bot.adopt_position()
+    saved_text = [None]
 
-    last_bar, last_close_try = None, 0.0
+    def save_sig():
+        """바뀌었을 때만 저장"""
+        if args.dry_run:
+            return
+        obj = {"last_bar": None if last_bar is None else str(last_bar), "open_row": open_row,
+               "extra": {str(k): v for k, v in extra.items()}}
+        text = json.dumps(obj, ensure_ascii=False, indent=1, default=str)
+        if text != saved_text[0]:
+            sig_json.write_text(text, encoding="utf-8")
+            saved_text[0] = text
+
+    last_bar, last_close_try, last_retry, last_guard, last_warn = saved_bar, 0.0, 0.0, 0.0, 0.0
+    sar_dir = None            # 마지막 완성 5분봉(last_bar)의 SAR 방향 (반대 콩 청산 기준)
     risk_notified = None      # 안전장치 알림은 하루 한 번만
     with bot.running("⏸ 자동매매 종료 (열린 포지션은 서버 SL/TP로 계속 관리됩니다)"):
         while True:
             now = bot.keep_alive()
+            pos = my_positions()
+            if pos is None:                           # 조회 실패: 진입·청산 판단 안 하고 다시
+                if time.time() - last_warn > 60:
+                    last_warn = time.time()
+                    log.warning(f"포지션 조회 실패 ({mt5.last_error()}), 이번 루프는 쉼")
+                time.sleep(POLL_SEC)
+                continue
 
-            # 진입했던 포지션이 닫혔는지 확인
-            open_row = check_closed(open_row, wr)
+            # 닫힌 포지션 기록, 기록 안 하던 포지션 이어받기
+            open_row = settle(open_row, extra, wr, pos)
+            save_sig()
             check_virtual(wr)
+
+            # SL/TP 빠진 포지션 복구, 계좌 손실 한도는 신호가 없어도 감시 (한도에 닿으면 신규 진입 중단, 보유는 서버 SL/TP로)
+            if time.time() - last_guard > RETRY_SEC:
+                last_guard = time.time()
+                if not args.dry_run:
+                    protect(pos)
+                bot.account_stop(now, ACCOUNT_STOP_PCT, RISK_JSON)
 
             friday = now.weekday() == 4
             # 청산이 실패해도(장 마감 등) 1분에 한 번만 다시 시도
             if friday and is_after(now, FRIDAY_CLOSE) and not args.dry_run and time.time() - last_close_try > 60:
-                for p in bot.positions():
+                for p in pos:
                     bot.close(p, "friday close", "금요일 청산")
                     last_close_try = time.time()
 
             m5 = bot.rates(mt5.TIMEFRAME_M5, M5_BARS)
-            if m5 is not None and m5.time.iat[-1] != last_bar:
-                last_bar = m5.time.iat[-1]
+            # 반대 콩 청산이 실패했으면 닫힐 때까지 다시. sar_dir이 최신 완성 봉 것일 때만 (새 봉이 나왔는데 아직 계산 전이면 안 함)
+            if (SAR_EXIT and sar_dir and not args.dry_run and time.time() - last_retry > RETRY_SEC
+                    and m5 is not None and m5.time.iat[-1] == last_bar):
+                opp = [p for p in pos if side_of(p) != sar_dir]
+                if opp:
+                    last_retry = time.time()
+                    for p in opp:
+                        close_retry(p, "sar exit", "반대 콩 청산")
+
+            if m5 is not None and (m5.time.iat[-1] != last_bar or sar_dir is None):
                 h1 = bot.rates(mt5.TIMEFRAME_H1, H1_BARS)
+                bar_end = m5.time.iat[-1] + pd.Timedelta(minutes=5)
+                if h1 is None or (h1.time + pd.Timedelta(hours=1) <= bar_end).sum() < 50:   # 1시간봉 조회 실패: 이 봉은 다음 루프에서 다시
+                    if time.time() - last_warn > 60:
+                        last_warn = time.time()
+                        log.warning(f"1시간봉 조회 실패 ({mt5.last_error()}), 다시 시도")
+                    time.sleep(POLL_SEC)
+                    continue
+                is_new = m5.time.iat[-1] != last_bar
                 side, bar, close, desc, sar_dir = compute_signal(m5, h1)
-                log.info(f"봉 {bar:%m-%d %H:%M} 종가 {close}: {desc}"
-                         + (f" -> 신호 {side_name(side)}" if side else ""))
+                if is_new:
+                    log.info(f"봉 {bar:%m-%d %H:%M} 종가 {close}: {desc}"
+                             + (f" -> 신호 {side_name(side)}" if side else ""))
                 if SAR_EXIT and not args.dry_run:
-                    for p in bot.positions():
+                    for p in pos:
                         if side_of(p) != sar_dir:
-                            bot.close(p, "sar exit", "반대 콩 청산")
-                    open_row = check_closed(open_row, wr)     # 같은 봉에서 새로 진입하기 전에 기록
-                if side and not args.dry_run:
+                            close_retry(p, "sar exit", "반대 콩 청산")
+                            last_retry = time.time()
+                    pos = my_positions()
+                    if pos is None:                   # 다시 조회 실패: 이 봉은 다음 루프에서 다시 판단
+                        time.sleep(POLL_SEC)
+                        continue
+                    open_row = settle(open_row, extra, wr, pos)               # 같은 봉에서 새로 진입하기 전에 기록
+                last_bar = bar
+                save_sig()
+                late = (now - (bar + pd.Timedelta(minutes=5))).total_seconds()
+                if side and is_new and not args.dry_run:
                     level, stopped, base = martin_state(now)
-                    if bot.positions() or open_row:
+                    if pos or open_row:
                         log.info("포지션 보유 중(또는 방금 청산 기록 대기)이라 신호 무시")
+                    elif late > ENTRY_LATE_SEC:
+                        log.info(f"신호 봉 마감 {late:.0f}초 뒤라 (재시작·멈춤) 진입 안 함")
+                    elif not fresh_tick():
+                        log.info(f"시세 멈춤 / 연결 끊김 (틱 {TICK_FRESH_SEC}초 넘게 없음)이라 진입 안 함")
                     elif WINRATE_PAUSE and wr["virtual"]:
                         log.info("가상 포지션 진행 중이라 신호 무시")
                     elif stopped:
@@ -490,8 +698,11 @@ def main():
                             bot.send(f"⛔ 안전장치: {reason}\n오늘은 신규 진입을 멈춥니다.")
                     elif is_paused(wr):
                         open_virtual(wr, side, bar.strftime("%Y-%m-%d %H:%M"))
+                    elif (late := (bot.clock.now() - (bar + pd.Timedelta(minutes=5))).total_seconds()) > ENTRY_LATE_SEC or not fresh_tick():
+                        log.info(f"주문 직전 다시 확인: 신호 봉 마감 {late:.0f}초 뒤 / 시세 {'정상' if fresh_tick() else '멈춤'} -> 진입 안 함")
                     else:
                         open_row = place(side, lot_for(level, base), level, bar.strftime("%Y-%m-%d %H:%M"), close)
+                        save_sig()
             time.sleep(POLL_SEC)
 
 
