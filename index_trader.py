@@ -1,19 +1,32 @@
-"""데모 전용 지수 장중 봇 (docs/hk_program.md 5-23, 5-24, 백테스트 backtests/index_intraday.py / index_ticks.py)
+"""데모 전용 지수 장중 봇 (docs/hk_program.md 5-23 ~ 5-25, 백테스트 backtests/index_intraday.py / index_ticks.py)
 
 --symbol NAS100 : 첫 30분 방향. 본장(뉴욕 09:30 = 서버 16:30) 첫 30분 Bid 움직임이 ATR x FIRST_MIN 넘으면
-                  그 방향으로 시장가 진입, 손절 ATR x FIRST_STOP, 마감 전 청산
---symbol GER40  : ORB 30분 매도만. Xetra 09:00(서버시간으로 바꿈) 처음 30분 Bid 저가를 마감된 1분봉 종가가 깨면 매도,
-                  손절 = 범위 가운데 (Bid가 닿으면 = Ask 기준 가운데 + 스프레드로 근사), 진입은 시가 + 3시간 전까지, 마감 전 청산
+                  그 방향으로 시가 30분 + 0.3초 뒤 시장가 진입, 손절 = 진입 순간 Bid - ATR (매수) / Ask + ATR (매도), MT5 SL로 걺
+--symbol GER40  : ORB 30분 매도만. Xetra 09:00(서버시간으로 바꿈) 처음 30분 Bid 저가를 마감된 1분봉 종가가 처음 깨면
+                  다음 분 + 0.3초 뒤 매도 (진입 시각이 시가 + 3시간 전일 때만). 손절 = Bid가 범위 가운데에 닿으면 시장가 청산
+                  (봇이 1초마다 확인, 백테스트와 같은 규칙) + 만일을 위한 MT5 SL (가운데 + 진입 스프레드 + 여유)
+청산: 마감 CLOSE_BEFORE초 전 시장가 (안 닫히면 다시 시도)
 ATR = 전날까지 본장 고가-저가 14일 평균 (1분봉 Bid). 휴장일·미국 조기 마감은 common/exchange_calendar.py (백테스트와 같음)
-lot = 거래당 위험 RISK_PCT% (손절까지 손실 / 1 lot 손실, 0.01 단위 내림, 최소 0.01)
-기록: logs/index_<종목>_log/trades.csv (요청가·체결가·스프레드·미끄러짐·보유 중 최대 역행·청산), 텔레그램
+lot = 거래당 위험 RISK_PCT% / 1 lot 손실(order_calc_profit), 종목 lot 단위로 내림. 최소 lot 위험이 MAX_RISK_PCT% 넘거나
+      손실 계산이 안 되면 그날 건너뜀
+안전장치 (2026-10-24 GPT 검증 반영)
+  - 상태 파일보다 MT5 실제 포지션·오늘 체결 이력을 먼저 봄: 이 매직의 포지션이 있거나 오늘 진입 체결이 있으면 새 진입 안 함
+  - 한 종목에 한 프로세스만 (잠금 파일), 상태 파일은 임시 파일에 쓰고 바꿔치기
+  - 주문 응답이 이상해도(부분 체결 등) 실제 포지션을 다시 조회해서 이어받음. 포지션 조회 실패면 그 루프는 새 진입 안 함
+  - 진입은 한 번 읽은 호가로 lot·손절을 계산하고 손절가 방향·최소 거리 확인. 진입 예정 시각보다 LATE_SEC초 넘게 늦으면 건너뜀
+  - GER40은 범위 이후 마감된 1분봉을 빠짐없이 순서대로 확인해서 '처음 돌파'를 찾음 (재시작해도 같은 봉을 찾음)
+  - 터미널 연결·시세 신선도(TICK_FRESH_SEC 안의 틱) 확인, 안 되면 새 진입 안 함
+기록: logs/index_<종목>_log/trades.csv (신호·예정·주문·체결 시각, 호가, 요청·체결 lot, 목표·실제 위험, 결과 코드,
+      틱 기준 최대 역행, 청산 요청·체결가·미끄러짐, 부분 청산 평균가), events.log, 텔레그램
 
 사용법: python index_trader.py --symbol NAS100        (데모 계좌, Ctrl+C로 종료)
         python index_trader.py --symbol GER40 --dry  (오늘 본장 시각·ATR만 보고 끝)
 """
 import argparse
-import logging
+import ctypes
+import json
 import math
+import os
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -23,25 +36,33 @@ import numpy as np
 
 from backtests.index_intraday import SESS, server
 from common.exchange_calendar import de_closed, us_close_time, us_closed
-from common.trader import Trader, append_csv, load_json, save_json, side_name
+from common.trader import Trader, append_csv, load_json, side_name
 from config import SYMBOL as CLOCK_SYMBOL
 from reports import ServerClock
 
+VERSION = "2026-10-24b"
 MAGICS = {"NAS100": 20261025, "GER40": 20261026}
 NAMES = {"NAS100": "나스닥 첫30분", "GER40": "독일 ORB 매도"}
 FIRST_MIN, FIRST_STOP = 0.2, 1.0
 ORB_MIN, ENTRY_UNTIL = 30, 180
 ATR_DAYS = 14
-RISK_PCT = 0.25
-LATE_MIN = 5            # 신호 시각보다 이만큼 늦게 켜졌으면 그날은 안 들어감 (백테스트와 다른 가격으로 들어가지 않게)
-CLOSE_BEFORE = 15       # 마감 이 초 전에 청산
-DEVIATION = 500         # 포인트 (지수 0.01 단위 = 5포인트)
+RISK_PCT = 0.25          # 목표 위험 (잔고 %)
+MAX_RISK_PCT = 0.5       # 최소 lot이어도 이보다 크면 건너뜀
+ENTRY_DELAY_MS = 300
+LATE_SEC = 60            # 진입 예정 시각보다 이만큼 늦으면 그날 건너뜀
+CLOSE_BEFORE = 2         # 마감 이 초 전에 청산 (백테스트는 마감 직전 마지막 틱)
+SAFETY_SL_PTS = {"GER40": 20.0}   # GER40 MT5 SL 여유 (봇의 Bid 손절이 먼저)
+TICK_FRESH_SEC = 30
+DEVIATION = 500          # 0.01 단위 = 5포인트
 POLL_SEC = 1.0
-FIELDS = ["date", "side", "signal", "atr", "lot", "entry_time", "req_price", "fill", "slip", "entry_spread", "sl",
-          "mae_pts", "close_time", "close_price", "result", "pts", "profit"]
+FIELDS = ["version", "date", "side", "signal", "atr", "signal_bar", "planned_entry", "send_time", "fill_time", "send_delay_ms",
+          "bid", "ask", "tick_time", "req_lot", "lot", "order", "deal", "position", "retcode", "req_price", "fill", "slip",
+          "entry_spread", "sl", "target_risk", "risk", "currency", "mae_pts", "close_req_time", "close_req_price",
+          "close_spread", "close_time", "close_price", "close_slip", "close_deals", "result", "pts", "profit"]
 bot = None
 
 
+# ---------------------------------------------------------------- 시각·시세
 def bounds(sym, d):
     """그날 본장 (서버시간 시작, 끝). 휴장일이면 None"""
     tz, o, c = SESS[sym]
@@ -51,12 +72,16 @@ def bounds(sym, d):
     return server(d, tz, o), server(d, tz, cl)
 
 
+def utc(t):
+    return t.replace(tzinfo=timezone.utc)
+
+
 def m1(sym, t0, t1):
     """t0 <= 봉 시작 < t1 1분봉 (서버시간)"""
-    r = mt5.copy_rates_range(sym, mt5.TIMEFRAME_M1, t0.replace(tzinfo=timezone.utc), (t1 - timedelta(seconds=1)).replace(tzinfo=timezone.utc))
+    r = mt5.copy_rates_range(sym, mt5.TIMEFRAME_M1, utc(t0), utc(t1 - timedelta(seconds=1)))
     if r is None or not len(r):
         return None
-    r = r[r["time"] < int(t1.replace(tzinfo=timezone.utc).timestamp())]
+    r = r[r["time"] < int(utc(t1).timestamp())]
     return r if len(r) else None
 
 
@@ -75,48 +100,197 @@ def atr_of(sym, d):
     return float(np.mean(rng)) if len(rng) == ATR_DAYS else None
 
 
+def nas_signal(r, atr, so):
+    """첫 30분 1분봉 -> (방향, 움직임) 또는 (0, 이유)"""
+    if r is None or r["time"][0] > int(utc(so + timedelta(minutes=5)).timestamp()):
+        return 0, "첫 30분 봉 없음"
+    mv = float(r["close"][-1] - r["open"][0])
+    if abs(mv) < FIRST_MIN * atr:
+        return 0, f"움직임 {mv:+.1f} < ATR {atr:.0f} x {FIRST_MIN:g}"
+    return (1 if mv > 0 else -1), mv
+
+
+def ger_first_break(bars, lo):
+    """범위 이후 마감된 1분봉들 중 종가가 lo 밑인 첫 봉의 시작 시각 (없으면 None)"""
+    k = np.flatnonzero(bars["close"] < lo)
+    return int(bars["time"][k[0]]) if k.size else None
+
+
+def fresh(sym):
+    """터미널 연결 + 그 종목 틱이 TICK_FRESH_SEC 안에 들어왔는지"""
+    ti = mt5.terminal_info()
+    t = mt5.symbol_info_tick(sym)
+    if ti is None or not ti.connected or t is None or not t.time_msc:
+        return None
+    if (bot.clock.now() - datetime.fromtimestamp(t.time_msc / 1000, timezone.utc).replace(tzinfo=None)).total_seconds() > TICK_FRESH_SEC:
+        return None
+    return t
+
+
+# ---------------------------------------------------------------- MT5 실제 상태
+def my_positions():
+    """이 봇 포지션 목록, 조회 실패면 None"""
+    p = mt5.positions_get(symbol=bot.symbol)
+    if p is None:
+        return None
+    return [x for x in p if x.magic == bot.magic]
+
+
+def entered_today(so, sc):
+    """오늘 본장 동안 이 봇의 진입 체결이 있었는지 (조회 실패면 None)"""
+    deals = mt5.history_deals_get(utc(so - timedelta(hours=1)), utc(sc + timedelta(hours=1)))
+    if deals is None:
+        return None
+    return any(d.magic == bot.magic and d.symbol == bot.symbol and d.entry == mt5.DEAL_ENTRY_IN for d in deals)
+
+
+def save_state(path, st):
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(st, ensure_ascii=False, indent=1), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def alive(pid):
+    """윈도우에서 그 PID 프로세스가 살아 있는지 (os.kill(pid, 0)은 윈도우에선 프로세스를 끝내 버려서 안 씀)"""
+    k = ctypes.windll.kernel32
+    h = k.OpenProcess(0x1000, False, pid)              # PROCESS_QUERY_LIMITED_INFORMATION
+    if not h:
+        return False
+    code = ctypes.c_ulong()
+    ok = k.GetExitCodeProcess(h, ctypes.byref(code))
+    k.CloseHandle(h)
+    return bool(ok) and code.value == 259              # STILL_ACTIVE
+
+
+def lock(path):
+    """한 종목에 프로세스 하나. 다른 살아 있는 프로세스가 잠가 두었으면 종료"""
+    try:
+        pid = int(path.read_text())
+    except (FileNotFoundError, ValueError):
+        pid = None
+    if pid and pid != os.getpid() and alive(pid):
+        raise SystemExit(f"이미 실행 중 (PID {pid}). 중복 실행 안 함")
+    path.write_text(str(os.getpid()))
+
+
+# ---------------------------------------------------------------- 주문
 def lot_for(side, price, sl_price):
+    """(lot, 실제 위험 $, 목표 위험 $) 또는 (None, 이유, 목표)"""
+    info = mt5.symbol_info(bot.symbol)
     risk = mt5.account_info().balance * RISK_PCT / 100
     otype = mt5.ORDER_TYPE_BUY if side > 0 else mt5.ORDER_TYPE_SELL
-    loss = abs(mt5.order_calc_profit(otype, bot.symbol, 1.0, price, sl_price) or 0)
-    if not loss:
-        return 0.01
-    return max(0.01, min(1.0, math.floor(risk / loss * 100) / 100))
+    loss = mt5.order_calc_profit(otype, bot.symbol, 1.0, price, sl_price)
+    if loss is None or loss >= 0:
+        return None, "손실 계산 안 됨", risk
+    loss = -loss
+    step = info.volume_step or 0.01
+    lot = math.floor(risk / loss / step) * step
+    lot = round(min(max(lot, info.volume_min), info.volume_max, 1.0), 2)
+    actual = loss * lot
+    if actual > mt5.account_info().balance * MAX_RISK_PCT / 100:
+        return None, f"최소 lot 위험 {actual:.2f}$가 {MAX_RISK_PCT:g}% 넘음", risk
+    return lot, actual, risk
 
 
-def enter(st, side, sl_price, signal):
-    t = mt5.symbol_info_tick(bot.symbol)
-    price = t.ask if side > 0 else t.bid
-    lot = lot_for(side, price, sl_price)
-    f = bot.open(side, lot, f"IDX {signal[:20]}", sl_dist=abs(price - sl_price))
-    if f is None:
-        st["done"] = "주문 실패"
+def enter(st, side, sl_of, signal, planned):
+    """한 번 읽은 호가로 lot·손절을 정하고 시장가 진입. sl_of(tick) -> 절대 손절가"""
+    t = fresh(bot.symbol)
+    if t is None:
+        st["done"] = "시세 멈춤 / 연결 끊김"
+        bot.send(f"⚠️ 진입 건너뜀: {st['done']}")
         return
-    st.update(ticket=f.res.order, side=side, lot=lot, req_price=f.price, fill=f.fill, sl=f.sl, signal=signal,
-              entry_time=f"{bot.clock.now():%H:%M:%S}", entry_spread=round(t.ask - t.bid, 2),
-              slip=round((f.fill - f.price) * side, 2), mae=0.0, done="진입")
-    bot.log.info(f"진입 {side_name(side)} {lot} lot @ {f.fill} (요청 {f.price}, 손절 {f.sl}) {signal}")
-    bot.send(f"{'📈' if side > 0 else '📉'} {side_name(side)} {lot} lot @ {f.fill} (요청 {f.price}, 스프레드 {t.ask - t.bid:.2f})\n"
-             f"{signal}\n손절 {f.sl}, 마감 전 청산")
+    price = t.ask if side > 0 else t.bid
+    info = mt5.symbol_info(bot.symbol)
+    sl = round(sl_of(t), info.digits)
+    min_dist = (info.trade_stops_level or 0) * info.point
+    if (side > 0 and sl >= t.bid - min_dist) or (side < 0 and sl <= t.ask + min_dist):
+        st["done"] = f"손절가 {sl}가 현재가 쪽으로 너무 가까움"
+        bot.send(f"⚠️ 진입 건너뜀: {st['done']}")
+        return
+    lot, risk, target = lot_for(side, price, sl)
+    if lot is None:
+        st["done"] = risk
+        bot.send(f"⏭ 진입 건너뜀: {risk} (목표 위험 {target:.2f}$)")
+        return
+    if not bot.margin_ok(side, lot):
+        st["done"] = "증거금 부족"
+        return
+    req = {"action": mt5.TRADE_ACTION_DEAL, "symbol": bot.symbol, "volume": lot,
+           "type": mt5.ORDER_TYPE_BUY if side > 0 else mt5.ORDER_TYPE_SELL, "price": price, "sl": sl,
+           "deviation": DEVIATION, "magic": bot.magic, "comment": f"IDX {VERSION}", "type_time": mt5.ORDER_TIME_GTC,
+           "type_filling": bot.filling_mode()}
+    st["done"] = "주문 보냄"                       # 응답 전에 죽어도 다시 안 보냄 (다음 루프는 실제 포지션으로 복구)
+    save_state(bot.state_path, st)
+    sent = bot.clock.now()
+    res = mt5.order_send(req)
+    got = bot.clock.now()
+    time.sleep(0.5)
+    pos = my_positions() or []
+    st.update(side=side, signal=signal, planned_entry=f"{planned:%H:%M:%S.%f}"[:-3], send_time=f"{sent:%H:%M:%S.%f}"[:-3],
+              send_delay_ms=int((got - sent).total_seconds() * 1000), bid=t.bid, ask=t.ask,
+              tick_time=datetime.fromtimestamp(t.time_msc / 1000, timezone.utc).strftime("%H:%M:%S.%f")[:-3],
+              req_lot=lot, req_price=price, entry_spread=round(t.ask - t.bid, 2), sl=sl, target_risk=round(target, 2),
+              risk=round(risk, 2), currency=mt5.account_info().currency, retcode=res.retcode if res else mt5.last_error(),
+              order=res.order if res else "", deal=res.deal if res else "")
+    if not pos:
+        st["done"] = f"주문 실패 ({st['retcode']} {res.comment if res else ''})"
+        bot.log.error(st["done"])
+        bot.send(f"❗ {st['done']}")
+        return
+    adopt(st, pos)
+    st["done"] = "진입"
+    bot.log.info(f"진입 {side_name(side)} {st['lot']} lot @ {st['fill']} (요청 {price}, 손절 {sl}, 위험 {risk:.2f}) {signal}")
+    bot.send(f"{'📈' if side > 0 else '📉'} {side_name(side)} {st['lot']} lot @ {st['fill']} (요청 {price}, 스프레드 {t.ask - t.bid:.2f}, "
+             f"응답 {st['send_delay_ms']}ms)\n{signal}\n손절 {sl} (위험 {risk:.2f}{st['currency']}), 마감 전 청산")
+
+
+def adopt(st, pos):
+    """실제 포지션으로 상태 채움 (부분 체결·재시작 복구)"""
+    p = pos[0]
+    st.update(position=p.ticket, lot=round(sum(x.volume for x in pos), 2), fill=p.price_open, side=1 if p.type == 0 else -1,
+              fill_time=datetime.fromtimestamp(p.time_msc / 1000, timezone.utc).strftime("%H:%M:%S.%f")[:-3],
+              entry_ms=int(p.time_msc))
+    st.setdefault("sl", p.sl)
+    st["slip"] = round((p.price_open - st.get("req_price", p.price_open)) * st["side"], 2)
+
+
+def close_all(pos, why, st):
+    t = mt5.symbol_info_tick(bot.symbol)
+    if t is not None and "close_req_time" not in st:
+        st.update(close_req_time=f"{bot.clock.now():%H:%M:%S}", close_req_price=t.bid if st.get("side", 1) > 0 else t.ask,
+                  close_spread=round(t.ask - t.bid, 2), close_why=why)
+    for p in pos:
+        bot.close(p, "IDX close", why)
 
 
 def finish(st):
-    """포지션이 닫혔으면 기록"""
-    info = bot.find_close(st["ticket"], {"IDX close": "CLOSE"})
-    if info is None:
+    """포지션이 다 닫혔으면 기록 (부분 청산은 체결량 가중 평균)"""
+    deals = mt5.history_deals_get(position=st["position"]) or ()
+    out = [d for d in deals if d.entry == mt5.DEAL_ENTRY_OUT]
+    if not out:
         return False
+    vol = sum(d.volume for d in out)
+    px = sum(d.price * d.volume for d in out) / vol
+    profit = round(sum(d.profit + d.commission + d.swap for d in deals), 2)
+    last = out[-1]
+    result = {mt5.DEAL_REASON_SL: "SL"}.get(last.reason, st.get("close_why", "CLOSE"))
     side = st["side"]
-    pts = round((info["close_price"] - st["fill"]) * side, 2)
+    tk = mt5.copy_ticks_range(bot.symbol, datetime.fromtimestamp(st["entry_ms"] / 1000, timezone.utc),
+                              datetime.fromtimestamp(last.time_msc / 1000 + 1, timezone.utc), mt5.COPY_TICKS_INFO)
+    mae = float(np.max((st["fill"] - tk["bid"]) if side > 0 else (tk["ask"] - st["fill"]))) if tk is not None and len(tk) else ""
+    req = st.get("close_req_price")
     append_csv(bot.log_dir / "trades.csv", FIELDS, {
-        "date": st["day"], "side": side_name(side), "signal": st["signal"], "atr": round(st["atr"], 1), "lot": st["lot"],
-        "entry_time": st["entry_time"], "req_price": st["req_price"], "fill": st["fill"], "slip": st["slip"],
-        "entry_spread": st["entry_spread"], "sl": st["sl"], "mae_pts": round(st["mae"], 2), **info, "pts": pts})
-    bot.send(f"{'✅' if info['profit'] > 0 else '❌'} 청산 ({info['result']}) @ {info['close_price']}: {pts:+.2f}pt, "
-             f"{info['profit']:+.2f}$ (보유 중 최대 역행 {st['mae']:.1f}pt)\n{bot.account_line()}")
-    st["ticket"] = None
+        **st, "version": VERSION, "date": st["day"], "side": side_name(side), "atr": round(st["atr"], 1),
+        "mae_pts": round(mae, 2) if mae != "" else "", "close_time": datetime.fromtimestamp(last.time, timezone.utc).strftime("%H:%M:%S"),
+        "close_price": round(px, 2), "close_slip": round((req - px) * side, 2) if req else "", "close_deals": len(out),
+        "result": result, "pts": round((px - st["fill"]) * side, 2), "profit": profit})
+    bot.send(f"{'✅' if profit > 0 else '❌'} 청산 ({result}) @ {px:.2f}: {(px - st['fill']) * side:+.2f}pt, {profit:+.2f}{st.get('currency', '')}"
+             f" (최대 역행 {mae if mae == '' else round(mae, 1)}pt)\n{bot.account_line()}")
+    st["position"] = None
     return True
 
 
+# ---------------------------------------------------------------- 메인
 def main():
     global bot
     ap = argparse.ArgumentParser()
@@ -132,41 +306,64 @@ def main():
     for _ in range(30):
         bot.clock.update()
         time.sleep(0.1)
-    state_json = log_dir / "state.json"
     now = bot.clock.now()
     if args.dry:
         b = bounds(sym, now.date())
         print(f"서버 {now:%Y-%m-%d %H:%M:%S}, 오늘 본장 {b[0]:%H:%M}~{b[1]:%H:%M}" if b else "오늘 휴장", f"ATR {atr_of(sym, now.date())}")
         mt5.shutdown()
         return
+    lock(log_dir / "run.lock")
+    bot.state_path = log_dir / "state.json"
     desc = (f"본장 첫 30분이 ATR x {FIRST_MIN:g} 넘게 움직이면 그 방향, 손절 ATR x {FIRST_STOP:g}" if sym == "NAS100"
-            else f"본장 처음 {ORB_MIN}분 저가를 1분봉 종가가 깨면 매도 (시가 + {ENTRY_UNTIL // 60}시간 전까지), 손절 범위 가운데")
-    bot.send(f"▶️ 데모 시작 ({acc.login})\n전략: {desc}, 마감 전 청산, 거래당 위험 {RISK_PCT:g}%")
-    st = load_json(state_json)
+            else f"본장 처음 {ORB_MIN}분 저가를 1분봉 종가가 처음 깨면 매도 (진입이 시가 + {ENTRY_UNTIL // 60}시간 전일 때), 손절 범위 가운데")
+    bot.send(f"▶️ 데모 시작 ({acc.login}, {VERSION})\n전략: {desc}, 마감 {CLOSE_BEFORE}초 전 청산, 거래당 위험 {RISK_PCT:g}% "
+             f"(최소 lot 위험 {MAX_RISK_PCT:g}% 넘으면 건너뜀)")
+    st = load_json(bot.state_path)
+    bot.log.info(f"시작 {VERSION}, 이어받은 상태 {st}")
     with bot.running("⏸ 종료"):
         while True:
             now = bot.keep_alive()
             d = now.date()
-            if st.get("day") != str(d) and not st.get("ticket"):
-                st = {"day": str(d)}
             b = bounds(sym, d)
-            # 남은 포지션: 기록 갱신 / 마감 전 청산
-            pos = bot.positions()
+            pos = my_positions()
+            if pos is None:                          # 조회 실패: 아무것도 하지 않음
+                time.sleep(POLL_SEC)
+                continue
+            # 1) 실제 포지션 관리: 이어받기, GER40 Bid 손절, 마감·날짜 넘김 청산
             if pos:
-                p = pos[0]
+                if not st.get("position"):
+                    st.setdefault("day", str(d))
+                    st.setdefault("atr", 0.0)
+                    adopt(st, pos)
+                    bot.log.info(f"포지션 이어받음 {st}")
                 t = mt5.symbol_info_tick(sym)
-                adverse = (st.get("fill", p.price_open) - t.bid) if p.type == mt5.POSITION_TYPE_BUY else (t.ask - st.get("fill", p.price_open))
-                st["mae"] = max(st.get("mae", 0.0), adverse)
-                if b is None or now >= b[1] - timedelta(seconds=CLOSE_BEFORE) or now.date() != datetime.strptime(st["day"], "%Y-%m-%d").date():
-                    bot.close(p, "IDX close", "마감 청산")
-            elif st.get("ticket"):
-                if finish(st):
-                    save_json(state_json, st)
-            if b is None or st.get("done") or now < b[0]:
-                save_json(state_json, st)
-                time.sleep(POLL_SEC if b and now < b[0] and (b[0] - now).total_seconds() < 120 else min(30, POLL_SEC * 10))
+                p_day = datetime.fromtimestamp(pos[0].time, timezone.utc).date()
+                if b is None or p_day != d or now >= b[1] - timedelta(seconds=CLOSE_BEFORE):
+                    close_all(pos, "마감 청산" if p_day == d else "지난 날 포지션 청산", st)
+                elif sym == "GER40" and "mid" in st and t is not None and t.bid >= st["mid"]:
+                    close_all(pos, "SL", st)
+                save_state(bot.state_path, st)
+                time.sleep(POLL_SEC)
+                continue
+            if st.get("position"):
+                finish(st)
+                save_state(bot.state_path, st)
+            if st.get("day") != str(d):
+                st = {"day": str(d)}
+            if b is None or st.get("done") or now < b[0] or now >= b[1]:
+                save_state(bot.state_path, st)
+                time.sleep(POLL_SEC if b and b[0] - now < timedelta(minutes=2) else 10)
                 continue
             so, sc = b
+            # 2) 오늘 이미 진입했으면 (상태 파일이 없어도) 다시 안 들어감
+            ent = entered_today(so, sc)
+            if ent is None:
+                time.sleep(POLL_SEC)
+                continue
+            if ent:
+                st["done"] = "오늘 이미 진입함 (체결 이력)"
+                bot.log.info(st["done"])
+                continue
             if "atr" not in st:
                 st["atr"] = atr_of(sym, d)
                 if st["atr"] is None:
@@ -174,54 +371,51 @@ def main():
                     bot.send("⚠️ ATR 계산할 1분봉이 부족해서 오늘은 쉽니다")
                     continue
             atr = st["atr"]
+            # 3) 신호
             if sym == "NAS100":
-                sig_t = so + timedelta(minutes=30)
-                if now >= sig_t:
-                    if now > sig_t + timedelta(minutes=LATE_MIN):
-                        st["done"] = "늦게 켜짐"
+                planned = so + timedelta(minutes=30, milliseconds=ENTRY_DELAY_MS)
+                if now >= planned:
+                    if (now - planned).total_seconds() > LATE_SEC:
+                        st["done"] = f"늦게 켜짐 ({(now - planned).total_seconds():.0f}초)"
                     else:
-                        r = m1(sym, so, sig_t)
-                        if r is None or r["time"][0] > int((so + timedelta(minutes=5)).replace(tzinfo=timezone.utc).timestamp()):
-                            st["done"] = "첫 30분 봉 없음"
+                        side, info = nas_signal(m1(sym, so, so + timedelta(minutes=30)), atr, so)
+                        if not side:
+                            st["done"] = info
+                            bot.log.info(info)
                         else:
-                            mv = float(r["close"][-1] - r["open"][0])
-                            if abs(mv) < FIRST_MIN * atr:
-                                st["done"] = f"움직임 {mv:+.1f} < ATR {atr:.0f} x {FIRST_MIN:g}"
-                                bot.log.info(st["done"])
-                            else:
-                                side = 1 if mv > 0 else -1
-                                t = mt5.symbol_info_tick(sym)
-                                sl = (t.bid - FIRST_STOP * atr) if side > 0 else (t.ask + FIRST_STOP * atr)
-                                enter(st, side, sl, f"첫 30분 {mv:+.1f}pt (ATR {atr:.0f})")
+                            enter(st, side, lambda t, s=side: (t.bid - FIRST_STOP * atr) if s > 0 else (t.ask + FIRST_STOP * atr),
+                                  f"첫 30분 {info:+.1f}pt (ATR {atr:.0f})", planned)
             else:
                 rng_end = so + timedelta(minutes=ORB_MIN)
-                if now >= so + timedelta(minutes=ENTRY_UNTIL):
-                    st["done"] = "3시간 안에 돌파 없음"
-                elif now >= rng_end + timedelta(minutes=1):
+                cur = now.replace(second=0, microsecond=0)
+                if cur >= rng_end + timedelta(minutes=1):
                     if "lo" not in st:
                         r = m1(sym, so, rng_end)
                         if r is None or len(r) < 20:
                             st["done"] = "범위 봉 부족"
                             continue
                         st["hi"], st["lo"] = float(r["high"].max()), float(r["low"].min())
-                        if now > rng_end + timedelta(minutes=LATE_MIN):
-                            st["late_check"] = True
-                    last = m1(sym, now.replace(second=0, microsecond=0) - timedelta(minutes=1), now.replace(second=0, microsecond=0))
-                    if last is not None and int(last["time"][-1]) != st.get("last_bar"):
-                        st["last_bar"] = int(last["time"][-1])
-                        if st.pop("late_check", False):
-                            seen = m1(sym, rng_end, now.replace(second=0, microsecond=0) - timedelta(minutes=1))
-                            if seen is not None and (seen["close"] < st["lo"]).any():
-                                st["done"] = "늦게 켜짐 (이미 돌파)"
-                                continue
-                        if float(last["close"][-1]) < st["lo"]:
-                            t = mt5.symbol_info_tick(sym)
-                            mid = (st["hi"] + st["lo"]) / 2
-                            enter(st, -1, mid + (t.ask - t.bid), f"30분 저가 {st['lo']:.1f} 깸 (범위 {st['hi'] - st['lo']:.1f}pt)")
-            save_json(state_json, st)
-            time.sleep(POLL_SEC)
+                        st["mid"] = (st["hi"] + st["lo"]) / 2
+                    bars = m1(sym, rng_end, cur)                     # 범위 이후 마감된 봉 전부 (순서대로)
+                    brk = ger_first_break(bars, st["lo"]) if bars is not None else None
+                    if brk is not None:
+                        bar = datetime.fromtimestamp(brk, timezone.utc).replace(tzinfo=None)
+                        planned = bar + timedelta(minutes=1, milliseconds=ENTRY_DELAY_MS)
+                        if planned >= so + timedelta(minutes=ENTRY_UNTIL):
+                            st["done"] = "3시간 안에 돌파 없음"
+                        elif (now - planned).total_seconds() > LATE_SEC:
+                            st["done"] = f"돌파({bar:%H:%M} 봉)를 늦게 봄 ({(now - planned).total_seconds():.0f}초)"
+                            bot.log.info(st["done"])
+                        elif now >= planned:
+                            st["signal_bar"] = f"{bar:%H:%M}"
+                            spread_pad = SAFETY_SL_PTS["GER40"]
+                            enter(st, -1, lambda t: st["mid"] + (t.ask - t.bid) + spread_pad,
+                                  f"30분 저가 {st['lo']:.1f} 깸 ({bar:%H:%M} 봉, 범위 {st['hi'] - st['lo']:.1f}pt)", planned)
+                    elif cur >= so + timedelta(minutes=ENTRY_UNTIL):
+                        st["done"] = "3시간 안에 돌파 없음"
+            save_state(bot.state_path, st)
+            time.sleep(0.2 if st.get("done") is None else POLL_SEC)
 
 
 if __name__ == "__main__":
-    logging.getLogger().setLevel(logging.INFO)
     main()
