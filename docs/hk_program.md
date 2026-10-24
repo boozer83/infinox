@@ -427,7 +427,8 @@
 
 ## 7. 관련 파일
 - 코드: backtests/hk_style.py, rsi_counter.py, oneway_test.py, trail_now.py, multi_pos.py, hedge_martin_ticks.py, hedge_martin_v2.py, news_hk.py, replay_demo.py, hedge_martin_trader.py (데모 봇, magic 20261020)
-- 데모 봇: news_trader.py (magic 20261021, bots.ps1 demo에 포함) = 5-15의 "비율 0.05% / 15분" 그대로. 발표마다 실제 진입 스프레드·청산 미끄러짐을 news_log/trades.csv에 기록
+- 데모 봇: news_trader.py (magic 20261021, scripts/bots.ps1 demo에 포함) = 5-15의 "비율 0.05% / 15분" 그대로. 발표마다 실제 진입 스프레드·청산 미끄러짐을 logs/news_log/trades.csv에 기록
 - 2026-10-22 추가: hk_apply.py (단타·마틴 x 뉴스 3가지), martin_split.py (분할·2배 조건, cycles 모드), news_breakout.py (돌파 판단 16가지), regime_check.py (장세 지표), hk_march.py (방송 구간 재현), our_upgrades.py (새 기능을 우리 단타에), news_deep.py (뉴스 지연·미끄러짐·워크포워드), martin_rescue.py (마틴 + 구조대 회복), news_moves.py (발표 뒤 움직임)
-- 결과 (깃 제외 results/): hk_apply_all.csv, hk_apply_all_stop.csv (뉴스 남은 쪽 2$ 손절판), martin_split_*.csv, martin_cycles_*.csv, news_tails.csv, news_breakout.csv, news_breakout_events.csv, regime_check.csv, regime_cycles.csv, hk_march_20260301.csv
-- 로컬 데이터 (깃 제외 data/): bars/XAUUSD_M1_*.csv.zip (틱으로 만든 1분봉), hk_trades/ 등. 다른 사람 거래내역 캡처는 다른사람거래내역/ (깃 제외, 저장소가 공개라 절대 올리지 말 것). calendar_all.csv는 MT5 Common\Files (mql5/ExportCalendar.mq5를 Currency 빈칸으로 실행, 7일씩 받음)
+- 결과 (깃 제외 results/): hk_apply_all.csv, hk_apply_all_stop.csv (뉴스 남은 쪽 2$ 손절판), martin_split_*.csv, martin_cycles_*.csv, news_tails.csv, news_breakout.csv, news_breakout_events.csv, regime_check.csv, regime_cycles.csv, hk_march_20260301.csv, y2526.txt
+  (2026-10-24 확인: 이 노트북에는 없음. 필요하면 위 백테스트를 다시 실행하면 results/에 생김. 숫자는 이 문서 5장에 남아 있음)
+- 로컬 데이터 (깃 제외 data/): bars/XAUUSD_M1_*.csv.zip (틱으로 만든 1분봉), hk_trades/ 등. 다른 사람 거래내역 캡처는 data/others_history/ (깃 제외, 저장소가 공개라 절대 올리지 말 것). calendar_all.csv는 MT5 Common\Files (mql5/ExportCalendar.mq5를 Currency 빈칸으로 실행, 7일씩 받음)

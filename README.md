@@ -1,12 +1,27 @@
 # infinox
 
-Infinox MT5 계좌로 금(XAUUSD)을 거래하는 파이썬 자동매매(데모 관찰용)와 백테스트 모음.
+Infinox MT5 계좌로 금(XAUUSD)을 거래하는 파이썬 자동매매 봇들과 백테스트 모음. 같은 전략의 MT4 EA(`mql4/`)도 있습니다.
 
-> **주의: 이 전략은 장기적으로 수익이 검증되지 않았습니다.**
-> 마틴의 기본 신호(SAR + RSI50 + H1 SAR)는 2022-01 ~ 2026-10 실제 틱 백테스트에서 전체 PF 0.96이었습니다(2022~2024년 손실, 2025~2026년 수익).
+> **주의: 이 전략들은 장기적으로 수익이 검증되지 않았습니다.**
+> SAR 단타의 기본 신호(SAR + RSI50 + H1 SAR)는 2022-01 ~ 2026-10 실제 틱 백테스트에서 전체 PF 0.96이었습니다(2022~2024년 손실, 2025~2026년 수익).
 > 지금 규칙(쉬기 필터 전부)은 같은 기간 PF 1.19지만, 필터가 2022~2024년 신호를 대부분 걸러서 거래와 수익이 2025~2026년 금 상승장에 몰려 있습니다.
-> 마틴을 쓰면 손실이 나는 시기에 더 빨리 깡통이 납니다. `demo_trader.py`는 **데모 계좌에서 관찰하는 용도**로 만들었고,
-> 실계좌는 `--live` 옵션을 줄 때만 실행됩니다.
+> 마틴을 쓰면 손실이 나는 시기에 더 빨리 깡통이 납니다. 모든 봇은 기본이 **데모 계좌 전용**이고, 실계좌는 `--live` 옵션을 줄 때만 실행됩니다.
+
+## 봇 한눈에 보기
+
+| 봇 | 매직 | 데모 | 실계좌 | 내용 |
+|---|---|---|---|---|
+| `demo_trader.py` (SAR 단타) | 20261017 | O | O | 5분봉 SAR 전환 + RSI50 + 1시간봉 SAR, 익절 3$ / 손절 7.5$, 고정 lot |
+| `trend_trader.py` (H4 추세) | 20261018 | O | O | 4시간봉 25봉 돌파, 12봉 반대 돌파 청산, 손절 3 ATR, 거래당 2%, 구름 필터 |
+| `asia_breakout_trader.py` (아시아 3마틴) | 20261019 | O | O | 아시아 레인지 → 런던 돌파 + 5일 모멘텀, 마틴 3단계, 23:00 청산 |
+| `asia_breakout_trader.py --symbol XAUEUR` | 20261024 | O | O | 같은 전략을 유로 표시 금에 (실계좌 종목명 `XAUEUR#`) |
+| `hedge_martin_trader.py` (헤지 마틴) | 20261020 | O | | SAR 단타 신호에 매수·매도 동시 진입, 손절 없음, 관찰용 |
+| `news_trader.py` (뉴스 양방향) | 20261021 | O | | 미국 CPI·고용·FOMC 발표 30초 전 양방향, 체결·미끄러짐 측정용 |
+| `sar_martin_trader.py` (단타 2마틴) | 20261022 | O | | SAR 단타 + 진 만큼만 되찾는 2마틴, 2연속 손절이면 그날 쉼 |
+| `trend_trader.py --symbol XETUSD` | 20261023 | O | | H4 추세를 이더리움에 |
+| `report_bot.py` (리포트) | - | O | O | 한국시간 평일 21:00 계좌별 전략 손익 리포트 |
+
+각 봇의 자세한 규칙과 백테스트 근거는 파일 맨 위 설명에 있습니다. 봇들이 같이 쓰는 MT5 연결·주문·기록·알림은 `common/trader.py`에 있습니다.
 
 ## 준비물
 
@@ -37,6 +52,15 @@ MT5 터미널 경로는 자동으로 찾습니다. MT5가 여러 개 설치돼 �
 $env:MT5_TERMINAL_PATH = "C:\Program Files\Infinox MetaTrader 5 Terminal\terminal64.exe"
 ```
 
+### 실계좌 터미널 (두 번째 MT5)
+
+MT5 파이썬 연결은 터미널에 로그인된 계좌 하나만 씁니다. 그래서 실계좌는 포터블 MT5를 따로 둡니다.
+
+1. MT5 설치 폴더를 `C:\MT5_LIVE`로 통째로 복사하고 `C:\MT5_LIVE\terminal64.exe /portable`로 켭니다.
+2. 실계좌로 로그인하고 Algo Trading을 켭니다. 실계좌 종목명은 뒤에 `#`이 붙습니다 (`XAUUSD#`, `XAUEUR#`).
+3. `scripts\bots.ps1 live`가 `MT5_TERMINAL_PATH=C:\MT5_LIVE\terminal64.exe`, `MT5_PORTABLE=1`, `MT5_SYMBOL=XAUUSD#`를 붙여 실행합니다.
+   데모 봇은 데모 터미널 경로를 붙여 실행하므로 실계좌 터미널에 잘못 붙지 않습니다. 붙더라도 봇이 "데모 계좌가 아닙니다"로 스스로 종료합니다.
+
 ## 텔레그램 알림 설정 (선택)
 
 진입·청산 때마다 거래 내용과 **오늘/이번주/이번달 수익률**을 보내고, **일일·주간·월간 리포트**를 보냅니다.
@@ -55,32 +79,44 @@ $env:MT5_TERMINAL_PATH = "C:\Program Files\Infinox MetaTrader 5 Terminal\termina
 
 파일 대신 환경변수 `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`를 써도 됩니다.
 
+모든 메시지 앞에 **계좌 종류와 전략 이름**이 붙습니다: `[데모 · SAR 단타]`, `[실계좌 · 아시아 3마틴·XAUEUR]`, `[데모 · 리포트]`.
+MT4 EA가 보내는 메시지는 `[MT4 · SAR 단타]`처럼 시작합니다.
+
 | 알림 | 시점 |
 |---|---|
 | 진입 | 방향, lot, 마틴 단계, 가격, SL/TP, 최대 손실, 잔고, 오늘/이번주/이번달 수익률 |
 | 청산 | 익절/손절, 손익 $와 %, 다음 마틴 단계(또는 정지), 잔고, 오늘/이번주/이번달 수익률 |
-| 일일 리포트 | 월~금 23:58 (서버시간, 금 시장 마감 직후) |
-| 주간 리포트 | 금요일 일일 리포트 다음 |
-| 월간 리포트 | 그 달 마지막 거래일 일일 리포트 다음 |
-| 기타 | 시작/종료, 오류로 멈춤, 5번째 진입 손절 정지, 주문 실패, 증거금 부족, 금요일 청산 실패 |
+| 일일 리포트 | 한국시간 월~금 21:00, 계좌 하나당 메시지 하나에 전략별 손익 (`report_bot.py`, 데모·실계좌 따로) |
+| 주간 리포트 | 금요일 일일 리포트에 이어서 |
+| 월간 리포트 | 그 달 마지막 평일 일일 리포트에 이어서 |
+| 기타 | 시작/종료, 오류로 멈춤, 마틴 정지, 주문·청산 실패, 증거금 부족, 계좌 손실 한도, Algo Trading 꺼짐 |
 
-수익률은 이 전략이 실현한 손익 ÷ 기간 시작 시점 잔고입니다. 열린 포지션의 평가손익은 포함하지 않습니다.
-리포트는 스크립트가 켜져 있을 때 보냅니다. 꺼져 있던 동안 놓친 리포트는 다시 켰을 때 가장 최근 것 하나만 보냅니다.
+수익률은 이 전략이 실현한 손익 ÷ (기간 시작 시점 잔고 + 기간 중 입금)입니다. 열린 포지션의 평가손익은 포함하지 않습니다.
+리포트 기간은 리포트 시각끼리 이어져서 빠지는 거래가 없습니다. 리포트 봇이 꺼져 있던 동안 놓친 리포트는 다시 켰을 때 가장 최근 것 하나만 보냅니다.
 
 ## 실행
 
+평소에는 `scripts\bots.ps1`로 봇 묶음을 한 번에 켜고 끕니다. 봇은 창 없이 백그라운드로 돌고, 같은 봇이 이미 떠 있으면 먼저 끄고 다시 켭니다.
+
 ```powershell
-# 1. 연결 확인 (주문 안 함): 계좌 종류가 "데모"로 나오는지 확인
-python scripts/check_connection.py
-
-# 2. 신호만 확인 (주문 안 함)
-python demo_trader.py --dry-run
-
-# 3. 자동매매 시작 (Ctrl+C로 종료)
-python demo_trader.py
+scripts\start_all.bat       # 데모 9개 + 실계좌 5개 켜기 (= bots.ps1 all)
+scripts\start_demo.bat      # 데모 묶음만
+scripts\start_live.bat      # 실계좌 묶음만
+powershell -ExecutionPolicy Bypass -File scripts\bots.ps1 status      # 지금 떠 있는 봇
+powershell -ExecutionPolicy Bypass -File scripts\bots.ps1 stop-demo   # 데모 묶음 끄기 (stop-live: 실계좌)
 ```
 
-Ctrl+C로 종료해도 열린 포지션은 서버에 걸어 둔 SL/TP로 계속 관리됩니다. 다시 실행하면 그 포지션과 오늘의 마틴 단계를 이어받습니다.
+봇 하나만 따로 확인할 때:
+
+```powershell
+python scripts/check_connection.py    # 연결 확인 (주문 안 함): 계좌 종류가 "데모"로 나오는지 확인
+python demo_trader.py --dry-run       # 신호만 확인 (주문·텔레그램 안 함). trend / asia도 같음
+python demo_trader.py                 # 실행 (Ctrl+C로 종료)
+```
+
+봇을 꺼도 열린 포지션은 서버에 걸어 둔 SL/TP로 계속 관리됩니다 (시간 청산·추세 종료 청산은 봇이 켜져 있어야 작동).
+다시 켜면 그 포지션과 마틴 단계를 이어받습니다. MT5 연결이 끊기면 봇이 스스로 다시 연결하고, 로그인 계좌가 바뀌면 안전을 위해 종료합니다.
+PC가 꺼지거나 잠들면 봇도 멈추므로 절전 모드를 끄고 전원을 연결해 두세요.
 
 ## 매매 규칙 (`demo_trader.py`)
 
@@ -100,10 +136,12 @@ Ctrl+C로 종료해도 열린 포지션은 서버에 걸어 둔 SL/TP로 계속 
 | 횡보 정지 | 오늘 완성된 1시간봉 SAR 전환이 3번 이상이면 그날 신규 진입 안 함 |
 | 조용한 시장 쉬기 | 신호 봉의 5분봉 ATR(14)이 2.5달러 미만이면 진입 안 함 (`MIN_ATR`) |
 | 급변동 쉬기 | 신호 봉의 5분봉 ATR(14)이 최근 20일 5분봉 ATR 중앙값의 2배를 넘으면 진입 안 함 (`MAX_ATR_MULT`). 손절 7.5달러가 변동성에 비해 너무 좁아지는 날을 피함 |
-| 성적 기반 쉬기 | 최근 200건(실제 + 가상) 승률이 71.4% 미만이면 가상 진입만 기록하고, 회복하면 실제 진입 재개 (`<로그 폴더>/winrate.json`) |
-| 안전장치 | 기본 데모 전용 (`--live`일 때만 실계좌), 매직 넘버 20261017 포지션만 관리, 증거금 부족 시 진입 안 함, 최대 lot 1.0, 하루 손실 한도는 꺼 둠 (마틴 5번째 진입까지), 최고 잔고 대비 평가금 -50% 시 중단 (`logs/demo_log/risk_state.json`을 지워야 재개) |
+| 과열 거르기 | 신호 봉 종가가 방금 뚫은 SAR 값에서 ATR × 0.8 넘게 갔거나, 새 SAR 점에서 ATR × 2.8 넘게 떨어져 있으면 진입 안 함 (`MAX_EXT`, `MAX_RISK`) |
+| 반대 콩 청산 | 보유 중 5분봉 SAR이 반대로 전환되면 TP/SL 전이라도 시장가 청산 (`SAR_EXIT`) |
+| 성적 기반 쉬기 | **꺼 둠** (`WINRATE_PAUSE = False`, 반대 콩 청산으로 승률이 71.8% 근처라 자주 쉬게 됨). 최근 200건 승률은 `<로그 폴더>/winrate.json`에 기록만 함 |
+| 안전장치 | 기본 데모 전용 (`--live`일 때만 실계좌), 매직 넘버 20261017 포지션만 관리, 증거금 부족 시 진입 안 함, 최대 lot 1.0, 하루 손실 한도는 꺼 둠, 최고 잔고 대비 평가금 -50% 시 중단 (`logs/demo_log/risk_state.json`을 지워야 재개, 실계좌는 `logs/live_log/`) |
 
-설정값은 `demo_trader.py` 위쪽 상수(`LOT_PER_1000`, `MARTIN_MAX_LEVEL`, `MAX_LOT_MULT`, `MIN_ATR`, `MAX_ATR_MULT`, `WINRATE_N`, `SL_USD`, `TP_USD`, `FRIDAY_CLOSE` 등)에서 바꿀 수 있습니다.
+설정값은 `demo_trader.py` 위쪽 상수(`LOT_PER_1000`, `MARTIN_MAX_LEVEL`, `MAX_LOT_MULT`, `MIN_ATR`, `MAX_ATR_MULT`, `MAX_EXT`, `SAR_EXIT`, `SL_USD`, `TP_USD`, `FRIDAY_CLOSE` 등)에서 바꿀 수 있습니다.
 
 **최악의 경우**: 5번 연속 손절하면 하루 손실은 7.5 × (0.03+0.06+0.12+0.15+0.15) × 100 ≈ **383달러**(1,000달러 계좌의 38%)입니다. 장 마감 사이 갭이 생기면 손실이 SL보다 더 커질 수 있습니다.
 
@@ -126,15 +164,17 @@ Ctrl+C로 종료해도 열린 포지션은 서버에 걸어 둔 SL/TP로 계속 
 | 청산 | 매수는 종가가 직전 12봉 최저가 아래, 매도는 직전 12봉 최고가 위면 시장가 청산 |
 | 손절 | 진입가 ± 3 × ATR(14), 주문할 때 서버에 설정. 익절 없음 |
 | 수량 | 손절에 걸리면 잔고의 2%를 잃도록 계산 (`RISK_PCT`) |
+| 구름 필터 | 돌파 방향이 4시간봉 일목 구름과 같을 때만 진입. 아니면 "그림자 포지션"으로 들고 있는 것처럼 기다렸다가, 추세가 끝나거나 손절가에 닿으면 다시 신호를 봄 (`CLOUD_FILTER`) |
 | 보유 | 평균 7.8일 (백테스트), 주말에도 보유 (스왑 발생). 23:50에 청산했다가 다음 날 재진입해 스왑을 피하는 방법은 이득이 작고 재진입 비용에 민감해서 쓰지 않음 |
-| 안전장치 | 데모 계좌 전용, 매직 넘버 20261018 포지션만 관리 |
+| 안전장치 | 기본 데모 전용 (`--live`일 때만 실계좌), 매직 넘버 20261018 포지션만 관리 |
 
 ```powershell
 python trend_trader.py --dry-run   # 신호만 확인
 python trend_trader.py             # 시작
+python trend_trader.py --symbol XETUSD   # 이더리움 (데모 전용, 매직 20261023)
 ```
 
-- 기록은 `logs/trend_log/` 폴더, 텔레그램은 같은 봇으로 메시지 앞에 `[추세]`가 붙습니다.
+- 기록은 `logs/trend_log/` 폴더 (실계좌 `logs/trend_live_log/`, 이더리움 `logs/trend_xetusd_log/`).
 - **잔고 1만 달러 이상 데모를 권합니다.** 손절폭이 1온스당 50~120달러라, 1,000달러 계좌에서는 최소 수량 0.01 lot으로도 거래당 5~12%를 잃을 수 있습니다.
 - `demo_trader.py`와 같은 계좌에서 같이 돌려도 서로의 포지션은 건드리지 않습니다. 다만 수익률 계산과 2% 수량 계산이 같은 잔고를 기준으로 섞입니다.
 - 계좌를 따로 쓰려면 MT5 터미널이 하나 더 필요합니다. MT5 파이썬 연결은 터미널에 로그인된 계좌 하나만 쓰기 때문입니다. MT5 설치 폴더를 통째로 복사해 두 번째 터미널을 만들고, 거기에 1만 달러 데모로 로그인한 뒤 실행하기 전에 경로를 지정합니다.
@@ -161,33 +201,80 @@ python trend_trader.py             # 시작
 - 더 안전하게 하려면 `LOT_PER_1000`을 0.02로 낮춥니다. 1분봉 백테스트(급변동 쉬기 전)에서 낙폭이 41% → 28%, 최악의 날이 -37% → -21%로 줄었고, 최종 잔고는 마틴만 돌릴 때보다 많았습니다.
 
 다른 종목은 효과가 없었습니다 (2026-10 확인): 은·비트코인에 마틴 단타(`gold_rest_others`), 미국 10년물 국채(USNote10Y)와 S&P 500(SPX500)에 같은 추세추종 → 모두 PF 1 미만.
+이후 다른 종목을 다시 본 결과(`backtests/others_scan.py`, `backtests/asia_xaueur.py`), H4 추세는 이더리움(XETUSD), 아시아 돌파는 XAUEUR에서 통해서 둘을 추가했습니다.
+
+## 아시아 3마틴 (`asia_breakout_trader.py`)
+
+| 항목 | 내용 |
+|---|---|
+| 레인지 | 오늘(서버시간) 01:05~08:55 5분봉의 최고가 / 최저가 (50봉 미만이면 그날 거래 없음) |
+| 진입 | 09:00~17:55에 시작한 5분봉 종가가 레인지 위면 매수, 아래면 매도. 그날 첫 돌파만, 하루 최대 1거래 |
+| 모멘텀 | 전일 종가 > 6거래일 전 종가면 매수만, 작으면 매도만 |
+| 손절 / 익절 | 기준폭 U = 일봉 ATR(14) × 0.5. 익절 U, 손절 0.75U |
+| 청산 | 23:00 시장가 (미국 휴일 조기 마감일은 19:30) |
+| 수량 | 사이클 시작 잔고 × 0.6% × 가중치(전일 고저 돌파면 1.5, 아니면 0.5) / U. 지면 다음 거래 2배, 최대 3단계 (1·2·4배) |
+| XAUEUR | `--symbol XAUEUR`로 같은 규칙을 유로 표시 금에 (매직 20261024, 위험 0.6%). 금 0.6% + XAUEUR 0.6%가 금 1% 혼자보다 수익 1.6배, 낙폭 16.4 → 14.1% |
+| 안전장치 | 최대 lot 1.0, 최고 잔고 대비 평가금 -50% 시 중단 |
+
+## 데모 관찰용 봇
+
+- **헤지 마틴** (`hedge_martin_trader.py`): SAR 단타 신호에 매수·매도를 같은 lot으로 동시 진입, 각자 익절 5$, 손절 없음.
+  SAR 전환마다 2배로 1개씩 추가(최대 4단계), 사이클 합계 +1%면 전부 청산, -30%면 전부 손절. 다른 계좌(HK MARTIN) 캡처와 흐름이 맞는지 보려는 용도이고, 백테스트 최대 낙폭 85%입니다.
+- **뉴스 양방향** (`news_trader.py`): 미국 CPI·고용·FOMC 금리 결정 발표 30초 전 양방향 진입 → 발표가 0.05% 움직이면 반대쪽 청산 → 5분 무반응이면 정리 → 남은 쪽 15분 또는 2$ 되돌림에 정리.
+  발표 일정은 MT5 캘린더 내보내기(`mql5/ExportCalendar.mq5`, `Common\Files\calendar_all.csv`)에서 읽으므로 **매주 ExportCalendar를 실행**해야 합니다. `python news_trader.py --dry`로 다음 2주 일정을 확인합니다.
+- **단타 2마틴** (`sar_martin_trader.py`): SAR 단타와 같은 진입·청산에, 지면 다음 lot을 진 금액을 익절 한 번에 딱 되찾는 크기로 (2마틴까지). 오늘 2연속 손절이면 그날 쉼.
+
+## MT4 EA (`mql4/Infinox_Bots.mq4`)
+
+파이썬 실계좌 구성과 같은 전략 4개(SAR 단타, H4 추세, 아시아 3마틴 금, 아시아 3마틴 XAUEUR)와 21:00 리포트를 EA 하나로 돌립니다.
+XAUUSD 차트 하나(아무 시간봉)에 붙이고, 차트 패널에서 전략을 골라 켜고 끕니다. 새로 생긴 XAUEUR는 처음엔 꺼져 있습니다.
+
+1. `mql4/`의 파일들을 MT4 데이터 폴더의 `MQL4\Experts\Infinox\`에 복사하고 MetaEditor에서 `Infinox_Bots.mq4`를 컴파일합니다.
+2. 텔레그램: `MQL4\Files\infinox_telegram.txt`에 1줄 토큰, 2줄 chat_id. **도구 → 옵션 → 전문가 조언자**의 "WebRequest 허용 URL"에 `https://api.telegram.org`를 추가합니다.
+3. EA 설정에서 `AllowLive`(실계좌 허용), `AsiaRiskPct`(0.6), `AsiaEurSymbol`(빈칸이면 차트 종목 접미사를 따라 `XAUEUR#`) 등을 확인합니다.
+   이미 차트에 붙어 있던 EA는 예전 입력값을 기억하므로 다시 확인하세요.
 
 ## 기록
 
-`logs/demo_log/` 폴더에 남습니다.
+봇마다 `logs/` 아래 폴더에 남습니다 (실계좌는 `_live`가 붙은 폴더).
 
-- `trades.csv`: 거래마다 신호 봉, 마틴 단계, lot, 신호 가격, 체결가, **슬리피지**, 스프레드, SL/TP, 청산가, 손익, 청산 사유(TP/SL/CLOSE)
-- `events.log`: 5분마다 SAR, RSI, H1 SAR 상태와 진입·청산·정지 기록
-- `state.json`: 리포트를 어디까지 보냈는지 기록 (중복 전송 방지)
+```
+logs/demo_log/  logs/live_log/            SAR 단타
+logs/trend_log/  logs/trend_live_log/      H4 추세 (logs/trend_xetusd_log/: 이더리움)
+logs/asia_log/  logs/asia_live_log/        아시아 3마틴 (logs/asia_xaueur_log/, logs/asia_xaueur_live_log/: XAUEUR)
+logs/hedge_log/  logs/news_log/  logs/sar_martin_log/
+logs/report_log/  logs/report_live_log/    리포트 봇
+```
 
-백테스트에서는 거래당 추가 비용이 0.2달러를 넘으면 우위가 사라졌습니다. 2~4주 운영한 뒤 `trades.csv`의 `slippage` 평균이 0.1달러 이하인지 먼저 확인하세요.
+- `trades.csv`: 거래마다 신호 봉, 마틴 단계, lot, 신호 가격, 체결가, **슬리피지**, 스프레드, SL/TP, 청산가, 손익, 청산 사유
+- `events.log`: 봉마다 신호 상태와 진입·청산·정지 기록, 오류
+- `state.json`, `risk_state.json` 등: 마틴 단계, 계좌 손실 한도 상태, 리포트 전송 기록 (껐다 켜도 이어짐)
+
+백테스트에서는 SAR 단타의 거래당 추가 비용이 0.2달러를 넘으면 우위가 사라졌습니다. 2~4주 운영한 뒤 `trades.csv`의 `slippage` 평균이 0.1달러 이하인지 먼저 확인하세요.
 
 ## 파일 구조
 
 ```
-config.py             공통 설정 (종목, MT5 연결)
-indicators.py         지표 계산 (SAR, RSI, ADX, EMA)
-scripts/check_connection.py   MT5 연결 / 계좌 확인 (읽기 전용)
-demo_trader.py        데모 관찰용 자동매매 (SAR + RSI50 + 마틴)
-trend_trader.py       데모 관찰용 자동매매 (4시간봉 추세추종)
-reports.py            수익률 계산, 일/주/월 리포트
-telegram_notify.py    텔레그램 알림 (설정: telegram.json)
-backtests/            백테스트 모음
+demo_trader.py, trend_trader.py, asia_breakout_trader.py,     봇 (전략 로직)
+hedge_martin_trader.py, news_trader.py, sar_martin_trader.py
+report_bot.py           계좌별 텔레그램 리포트
+common/trader.py        봇 공통: MT5 연결·계좌 확인, 주문·청산, 기록, 텔레그램, 계좌 손실 한도
+config.py               공통 설정 (종목, MT5 터미널 경로)
+indicators.py           지표 계산 (SAR, RSI, ATR, ADX, EMA)
+reports.py              수익률 계산, 서버 시계
+telegram_notify.py      텔레그램 전송 (설정: telegram.json, git에 없음)
+scripts/                bots.ps1(봇 켜고 끄기), start_*.bat, check_connection.py, 틱 다운로드 스크립트
+mql4/                   MT4 EA,  mql5/: MT5 캘린더 내보내기
+backtests/              백테스트 모음
+logs/                   봇 기록 (git에 없음)
+results/                백테스트 결과 (git에 없음, archive_*: 예전 결과)
+data/                   틱·봉 데이터 (git에 없음)
+docs/                   분석 문서, 작업 기록
 ```
 
 ## 백테스트
 
-저장소 루트에서 `python -m backtests.<이름>`으로 실행합니다. 결과 CSV는 실행한 폴더에 저장됩니다.
+저장소 루트에서 `python -m backtests.<이름>`으로 실행합니다. 결과 CSV는 스크립트에 따라 `results/` 또는 실행한 폴더에 저장됩니다 (예전 결과는 `results/archive_1024/`).
 
 데이터는 두 가지입니다.
 - **실제 틱** (`data/ticks/`, git에 없음): 대부분의 백테스트가 씁니다. MT5가 켜져 있어야 하고, 처음 실행할 때 MT5에서 받아 저장합니다. 4년 10개월치가 수 GB이고 시간이 걸립니다.
