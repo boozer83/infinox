@@ -27,6 +27,7 @@
   python trend_trader.py            # 실행 (Ctrl+C로 종료)
   python trend_trader.py --dry-run  # 주문 없이 신호만 계산해서 출력 (텔레그램 전송 안 함)
   python trend_trader.py --live     # 실계좌에서 실행 (데모에서 충분히 확인한 뒤에만)
+  python trend_trader.py --symbol XETUSD   # 이더리움 H4 (데모 전용, 매직 20261023, 기록 trend_xetusd_log/)
 """
 import argparse
 import csv
@@ -40,6 +41,7 @@ import MetaTrader5 as mt5
 import numpy as np
 import pandas as pd
 
+import demo_trader
 from config import CONTRACT, SYMBOL
 from demo_trader import account_kind, check_demo, connect, filling_mode, find_close, rates
 from indicators import atr
@@ -57,6 +59,7 @@ RISK_PCT = 0.02
 MAX_LOT = 5.0
 # 주문
 MAGIC = 20261018
+SYMBOL_MAGIC = {"XETUSD": 20261023}   # --symbol 로 다른 종목을 돌릴 때 매직 넘버
 DEVIATION = 50
 POLL_SEC = 2.0
 BARS = 300
@@ -82,6 +85,18 @@ STRATEGY_DESC = (f"4시간봉 {N_ENTRY}봉 돌파 추세추종, {N_EXIT}봉 반�
 def send(text):
     """텔레그램 전송 (앞에 전략 이름 표시)"""
     tg.send(f"[{STRATEGY}] {text}")
+
+
+def use_symbol(sym):
+    """금 말고 다른 종목으로 (--symbol, 데모 전용): 매직·기록 폴더·이름을 따로 쓰고, demo_trader 함수들도 그 종목을 보게 함
+    이더리움(XETUSD) 2022~2026 틱 백테스트: 연 +11~51%, 낙폭 7~19%, 금 H4와 월별 손익 상관 0.02 (backtests/others_scan.py)"""
+    global SYMBOL, MAGIC, LOG_DIR, TRADES_CSV, STATE_JSON, SHADOW_JSON, SHADOW_CSV, STRATEGY
+    SYMBOL = demo_trader.SYMBOL = sym
+    MAGIC = SYMBOL_MAGIC.get(sym, MAGIC)
+    LOG_DIR = LOG_DIR.parent / f"trend_{sym.lower()}_log"
+    TRADES_CSV, STATE_JSON, SHADOW_JSON = LOG_DIR / "trades.csv", LOG_DIR / "state.json", LOG_DIR / "shadow.json"
+    SHADOW_CSV = LOG_DIR / "shadow_trades.csv"
+    STRATEGY = f"H4 추세·{sym}"
 
 
 def setup_logging():
@@ -276,11 +291,18 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true", help="주문 없이 신호만 계산")
     ap.add_argument("--live", action="store_true", help="실계좌에서도 실행 (기본은 데모 전용)")
+    ap.add_argument("--symbol", help="금 말고 다른 종목 (데모 전용, 예: XETUSD)")
     args = ap.parse_args()
+    if args.symbol and args.live:
+        raise SystemExit("--symbol은 데모에서만 씁니다")
     if args.live:
         use_live_paths()
+    if args.symbol:
+        use_symbol(args.symbol)
     setup_logging()
     connect(args.live)
+    global CONTRACT
+    CONTRACT = mt5.symbol_info(SYMBOL).trade_contract_size   # 금 100, 이더리움 1
     acc = check_demo(args.live)
     kind = account_kind(acc)
     tg = Notifier()

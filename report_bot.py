@@ -34,7 +34,10 @@ from telegram_notify import Notifier
 KST = timezone(timedelta(hours=9))
 REPORT_HOUR = 21
 POLL_SEC = 20
-STRATS = (("SAR 단타", demo_trader.MAGIC), ("H4 추세", trend_trader.MAGIC), ("아시아 3마틴", asia_breakout_trader.MAGIC))
+SFX = "#" if SYMBOL.endswith("#") else ""   # 실계좌 종목명은 뒤에 #
+STRATS = (("SAR 단타", demo_trader.MAGIC, SYMBOL), ("H4 추세", trend_trader.MAGIC, SYMBOL),
+          ("아시아 3마틴", asia_breakout_trader.MAGIC, SYMBOL),
+          ("아시아 3마틴·XAUEUR", asia_breakout_trader.SYMBOL_MAGIC["XAUEUR"], "XAUEUR" + SFX))
 WEEKDAYS = "월화수목금토일"
 
 LOG_DIR = Path(__file__).resolve().parent / "report_log"
@@ -73,8 +76,8 @@ def section(title, start, end, off):
     b0, b1, dep = balance_at(s), balance_at(e), deposits(s, e)
     lines = [f"{title} ({start:%m/%d %H:%M} ~ {end:%m/%d %H:%M})"]
     total = 0.0
-    for name, magic in STRATS:
-        st = stats(s, e, magic, SYMBOL)
+    for name, magic, sym in STRATS:
+        st = stats(s, e, magic, sym)
         total += st["pnl"]
         n, w = st["trades"], st["wins"]
         trades = f"{n}건 (익절 {w} / 손절 {n - w}, 승률 {w / n * 100:.0f}%)" if n else "거래 없음"

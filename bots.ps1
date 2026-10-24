@@ -7,14 +7,16 @@ param([ValidateSet("demo", "live", "all", "status", "stop-demo", "stop-live")][s
 
 $Dir = $PSScriptRoot
 $Bots = @("demo_trader.py", "trend_trader.py", "asia_breakout_trader.py", "report_bot.py")
-$DemoOnly = @("hedge_martin_trader.py", "news_trader.py", "sar_martin_trader.py")   # demo account only (no --live)
+$DemoOnly = @("hedge_martin_trader.py", "news_trader.py", "sar_martin_trader.py", "trend_trader.py --symbol XETUSD", "asia_breakout_trader.py --symbol XAUEUR")   # demo account only (no --live)
+$LiveExtra = @("asia_breakout_trader.py --symbol XAUEUR")   # live account too (symbol XAUEUR#), on top of $Bots
+$DemoTerminal = "C:\Program Files\Infinox MetaTrader 5 Terminal\terminal64.exe"
 $LiveEnv = @{ MT5_TERMINAL_PATH = "C:\MT5_LIVE\terminal64.exe"; MT5_PORTABLE = "1"; MT5_SYMBOL = "XAUUSD#" }
 
 function Get-Bots([bool]$Live) {
     Get-CimInstance Win32_Process -Filter "name like 'python%'" | Where-Object {
         $cl = $_.CommandLine
         $isBot = $false
-        foreach ($b in $Bots + $DemoOnly) { if ($cl -like "*$b*") { $isBot = $true } }
+        foreach ($b in $Bots + $DemoOnly + $LiveExtra) { if ($cl -like "*$b*") { $isBot = $true } }
         $isBot -and (($cl -like "*--live*") -eq $Live)
     }
 }
@@ -31,10 +33,12 @@ function Start-Set([bool]$Live) {
     Start-Sleep 2
     foreach ($k in $LiveEnv.Keys) { Remove-Item "Env:$k" -ErrorAction SilentlyContinue }
     if ($Live) { foreach ($k in $LiveEnv.Keys) { Set-Item "Env:$k" $LiveEnv[$k] } }
-    $set = if ($Live) { $Bots } else { $Bots + $DemoOnly }
+    # pin demo bots to the demo terminal; without a path mt5.initialize() may attach to the live one
+    else { $env:MT5_TERMINAL_PATH = $DemoTerminal }
+    $set = if ($Live) { $Bots + $LiveExtra } else { $Bots + $DemoOnly }
     foreach ($b in $set) {
         $a = if ($Live) { "$b --live" } else { $b }
-        $p = Start-Process python -ArgumentList $a -WorkingDirectory $Dir -WindowStyle Minimized -PassThru
+        $p = Start-Process python -ArgumentList $a -WorkingDirectory $Dir -WindowStyle Hidden -PassThru
         Write-Host "start PID $($p.Id)  $a"
     }
     foreach ($k in $LiveEnv.Keys) { Remove-Item "Env:$k" -ErrorAction SilentlyContinue }

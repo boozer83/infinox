@@ -42,6 +42,8 @@ v2 백테스트 (backtests/asia_v2.py, 실제 틱, 2022-01 ~ 2026-10, 1만 달�
   python asia_breakout_trader.py            # 데모 실행 (Ctrl+C로 종료)
   python asia_breakout_trader.py --dry-run  # 주문 없이 신호만 계산해서 출력
   python asia_breakout_trader.py --live     # 실계좌 (데모에서 충분히 확인한 뒤에만)
+  python asia_breakout_trader.py --symbol XAUEUR          # 유로 표시 금 (매직 20261024, 기록 asia_xaueur_log/)
+  python asia_breakout_trader.py --symbol XAUEUR --live   # 실계좌 (종목명 XAUEUR#, 기록 asia_xaueur_live_log/)
 """
 import argparse
 import csv
@@ -76,7 +78,7 @@ SL_RATIO = 0.75            # 손절 = U × 0.75
 W_STRONG, W_WEAK = 1.5, 0.5    # 신호 강도 가중치 (전일 고가/저가 돌파면 강함)
 MOM_DAYS = 5               # 모멘텀: 전일 종가 vs (MOM_DAYS+1)거래일 전 종가
 # 자금관리
-RISK_PCT = 1.0             # 1단계 lot = 사이클 시작 잔고의 1% / 손절폭
+RISK_PCT = 0.6             # 1단계 lot = 사이클 시작 잔고의 0.6% / 손절폭 (XAUEUR 아시아와 같이 돌려서 1% -> 0.6%, 2026-10-24)
 MARTIN_MULT = 2
 MARTIN_STEPS = 3           # 1·2·4배
 # 안전장치
@@ -84,6 +86,8 @@ MAX_LOT = 1.0
 ACCOUNT_STOP_PCT = 50.0
 # 주문
 MAGIC = 20261019
+SYMBOL_MAGIC = {"XAUEUR": 20261024}   # --symbol 로 다른 종목을 돌릴 때 매직 넘버
+SYMBOL_RISK = {"XAUEUR": 0.6}         # 그 종목의 RISK_PCT (금 0.6% + XAUEUR 0.6%: 금 1% 혼자보다 수익 1.6배, 낙폭 16.4 -> 14.1%)
 DEVIATION = 50             # 허용 슬리피지 (포인트, 0.50달러). 손절폭이 30$ 이상이라 여유 있게
 POLL_SEC = 1.0
 
@@ -159,6 +163,20 @@ def use_live_paths():
     TRADES_CSV, STATE_JSON = LOG_DIR / "trades.csv", LOG_DIR / "state.json"
     BOT_JSON, RISK_JSON = LOG_DIR / "bot_state.json", LOG_DIR / "risk_state.json"
     STRATEGY = "아시아 3마틴·실계좌"
+
+
+def use_symbol(sym, live=False):
+    """금 말고 다른 종목으로 (--symbol): 매직·위험·기록 폴더·이름을 따로 씀. 실계좌 종목명은 뒤에 # (XAUEUR#)
+    XAUEUR 2022~2026 틱 백테스트: 전반 +75% / 후반 +126%, 낙폭 11~13%, 금 아시아와 같은 날 같은 방향 95%"""
+    global SYMBOL, MAGIC, RISK_PCT, LOG_DIR, TRADES_CSV, STATE_JSON, BOT_JSON, RISK_JSON, STRATEGY
+    base = sym.rstrip("#")
+    SYMBOL = base + "#" if live else base
+    MAGIC = SYMBOL_MAGIC.get(base, MAGIC)
+    RISK_PCT = SYMBOL_RISK.get(base, RISK_PCT)
+    LOG_DIR = Path(__file__).resolve().parent / f"asia_{base.lower()}{'_live' if live else ''}_log"
+    TRADES_CSV, STATE_JSON = LOG_DIR / "trades.csv", LOG_DIR / "state.json"
+    BOT_JSON, RISK_JSON = LOG_DIR / "bot_state.json", LOG_DIR / "risk_state.json"
+    STRATEGY = f"아시아 3마틴·{base}{'·실계좌' if live else ''}"
 
 
 def check_account(allow_live=False, login=None):
@@ -408,11 +426,19 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true", help="주문 없이 신호만 계산")
     ap.add_argument("--live", action="store_true", help="실계좌에서도 실행 (기본은 데모 전용)")
+    ap.add_argument("--symbol", help="금 말고 다른 종목 (예: XAUEUR)")
     args = ap.parse_args()
     if args.live:
         use_live_paths()
+    if args.symbol:
+        use_symbol(args.symbol, args.live)
     setup_logging()
     connect(args.live)
+    if args.symbol:
+        # 계좌 통화(달러)로 1 lot이 가격 1 움직일 때 손익 (XAUEUR은 유로 손익을 달러로 바꿔서)
+        global CONTRACT
+        info = mt5.symbol_info(SYMBOL)
+        CONTRACT = info.trade_tick_value / info.trade_tick_size
     acc = check_account(args.live)
     kind = "데모" if acc.trade_mode == mt5.ACCOUNT_TRADE_MODE_DEMO else "실계좌"
     tg = Notifier()
