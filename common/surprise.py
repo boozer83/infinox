@@ -20,6 +20,10 @@ S_MIN = 2.0
 MAX_HOLD_MS = 30 * 60_000
 EXITS = {"큰이익추적 5/2.5/15분": ("큰이익추적", 5, 2.5, 15), "합산보호 2/1 30분": ("합산보호", 2, 1, 30),
          "30분 보유": ("시간", 30, None)}
+# 큰이익추적에 '아니다' 판단을 덧붙인 것 (5-21): 발표 30초 뒤 반대로 1$ 넘게 가 있으면 / 진입 뒤 마감된 1분봉 SAR이 반대면
+EXTRA = ("큰이익추적+반응30초", "큰이익추적+SAR1분")
+NAMES = list(EXITS) + list(EXTRA)
+SAR_BEFORE_MS = 8 * 3600_000     # SAR 계산용으로 발표 전 틱을 이만큼 (짧으면 SAR이 덜 맞음)
 
 
 def key_of(currency, event):
@@ -82,8 +86,12 @@ def decide(contribs):
 
 
 def outcome(tt, b, a, ms, side, entry_ms, entry_price=None):
-    """발표 ms, entry_ms 틱에 진입 -> {청산 이름: $/oz} (틱은 발표 30분 직전까지만 씀, 미끄러짐 미포함)"""
+    """발표 ms, entry_ms 틱에 진입 -> {청산 이름: $/oz} (틱은 발표 30분 직전까지만 씀, 미끄러짐 미포함)
+    SAR1분은 넘겨준 틱 전체(발표 SAR_BEFORE_MS 전부터 주면 맞음)로 1분봉 SAR을 계산"""
+    from backtests.news_surprise_stops import sar_bars, stop_sar_close
     keep = tt < ms + MAX_HOLD_MS
+    bars = sar_bars(tt[keep], b[keep], 1)
+    keep &= tt >= ms - 60_000
     tt, b, a = tt[keep], b[keep], a[keep]
     mid = (a + b) / 2
     r = int(np.searchsorted(tt, ms))
@@ -94,7 +102,13 @@ def outcome(tt, b, a, ms, side, entry_ms, entry_price=None):
     e0 = entry_price if entry_price is not None else float(a[k] if side > 0 else b[k])
     p = (b[k:] - e0) if side > 0 else (e0 - a[k:])
     f = (mid[k:] - ref) * side
+    tm = tt[k:]
     out = {"ref_mid": round(ref, 2), "entry_price": round(e0, 2)}
     for name, ex in EXITS.items():
-        out[name] = round(float(p[exit_at(ex, p, f, tt[k:], ms, 0.0)]), 2)
+        out[name] = round(float(p[exit_at(ex, p, f, tm, ms, 0.0)]), 2)
+    j0 = exit_at(EXITS["큰이익추적 5/2.5/15분"], p, f, tm, ms, 0.0)
+    j = int(np.searchsorted(tm, ms + 30_000))
+    out["큰이익추적+반응30초"] = round(float(p[min(j0, j) if j < len(tm) and f[j] < -1 else j0]), 2)
+    js = stop_sar_close(bars, tm, tm[0], side)
+    out["큰이익추적+SAR1분"] = round(float(p[j0 if js is None else min(j0, js)]), 2)
     return out

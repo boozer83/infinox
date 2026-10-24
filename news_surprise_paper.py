@@ -6,8 +6,8 @@
    첫 지표를 읽고 GROUP_WAIT초가 지나면 판단 (고용지표처럼 여러 개가 같이 나올 때 첫 지표만으로 들어가지 않게)
 4) |S| >= S_MIN, 엇갈림 없음, 발표 MAX_LAG초 안이면 모의 진입: 판단 ENTRY_DELAY_MS 뒤의 새 틱 가격 (매수 Ask / 매도 Bid)
    (CalendarLive가 실제치를 받은 시각보다 앞선 틱은 안 씀)
-5) 발표 30분 30초 뒤 MT5에서 틱을 받아 청산 3가지 계산 (발표 30분 직전 틱까지, 백테스트와 같음):
-   큰이익추적 5/2.5/15분(기본), 합산보호 2/1 30분, 30분 보유. 비교용으로 '발표 1초 뒤(+0.3초) 진입했다면'도 같이
+5) 발표 30분 30초 뒤 MT5에서 틱(SAR용으로 발표 8시간 전부터)을 받아 청산 5가지 계산 (발표 30분 직전 틱까지, 백테스트와 같음):
+   큰이익추적 5/2.5/15분(기본), 합산보호 2/1 30분, 30분 보유, 큰이익추적+반응30초, 큰이익추적+SAR1분 (5-21). 비교용으로 '발표 1초 뒤(+0.3초) 진입했다면'도 같이
 기록: logs/surprise_log/signals.csv (발표마다 판단 때 / 1분 뒤 S, 지표별 기여, 지연, 진입 여부·이유)
       selected = 대표 지표가 2022~2024 모의 매매에서 이익이던 지표인지 (5-20, 진입은 똑같이 하고 표시만)
       trades.csv (모의 매매 결과 $/oz, 미끄러짐 미포함)
@@ -51,8 +51,8 @@ LIVE_COLS = ["recv_server", "event_time", "delay_ms", "tick_ms", "importance", "
 SIG_FIELDS = ["event_time", "main_key", "selected", "expected", "got_at_decide", "S_decide", "S_1min", "detail", "first_delay_ms", "decide_delay_ms",
               "entered", "reason"]
 TRADE_FIELDS = (["event_time", "main_key", "selected", "S", "side", "detail", "first_delay_ms", "decide_delay_ms", "entry_time", "entry_delay_ms",
-                 "entry_price", "entry_spread", "ref_mid"] + [f"{k} $/oz" for k in sp.EXITS]
-                + [f"1초 진입 {k} $/oz" for k in sp.EXITS])
+                 "entry_price", "entry_spread", "ref_mid"] + [f"{k} $/oz" for k in sp.NAMES]
+                + [f"1초 진입 {k} $/oz" for k in sp.NAMES])
 bot = None
 
 
@@ -111,17 +111,17 @@ def ticks(t0, t1):
 def evaluate(tr, tk=None):
     """발표 30분 30초 뒤: 모의 진입가 그대로 청산 3가지 + 1초(+0.3초) 진입 비교"""
     rel = tr["release"]
-    tk = tk or ticks(rel - timedelta(seconds=60), rel + timedelta(minutes=30))
+    tk = tk or ticks(rel - timedelta(milliseconds=sp.SAR_BEFORE_MS), rel + timedelta(minutes=30))
     if tk is None:
         return None
     ms = to_ms(rel)
     res = sp.outcome(*tk, ms, tr["side"], tr["entry_ms"], tr["entry_price"])
     if res is None:
         return None
-    out = {"ref_mid": res["ref_mid"], **{f"{k} $/oz": res[k] for k in sp.EXITS}}
+    out = {"ref_mid": res["ref_mid"], **{f"{k} $/oz": res[k] for k in sp.NAMES}}
     one = sp.outcome(*tk, ms, tr["side"], ms + 1300)
     if one:
-        out.update({f"1초 진입 {k} $/oz": one[k] for k in sp.EXITS})
+        out.update({f"1초 진입 {k} $/oz": one[k] for k in sp.NAMES})
     return out
 
 
@@ -151,7 +151,7 @@ def replay(day, lag):
             rows.append({**row, "진입": why})
             continue
         ms = to_ms(rel)
-        k0, k1 = np.searchsorted(t, [ms - 60_000, ms + sp.MAX_HOLD_MS])
+        k0, k1 = np.searchsorted(t, [ms - sp.SAR_BEFORE_MS, ms + sp.MAX_HOLD_MS])
         tk = (t[k0:k1], bid[k0:k1], ask[k0:k1])
         res = sp.outcome(*tk, ms, side, ms + int(lag * 1000) + ENTRY_DELAY_MS)
         rows.append({**row, "진입": "매수" if side > 0 else "매도", **(res or {})})
@@ -191,7 +191,7 @@ def main():
     sched, sched_at = schedule_groups(), time.time()
     groups, entries, pending, warned = {}, [], [], False
     bot.send(f"▶️ 시작 ({acc.login}, 주문 없음)\n발표 뒤 {MAX_LAG}초 안에 받은 실제치로 |S| >= {sp.S_MIN:g}이면 서프라이즈 방향 모의 진입 "
-             f"(같은 시각 지표는 묶어서 판단, 최대 {GROUP_WAIT:g}초 기다림), 발표 30분 30초 뒤 청산 3가지 결과 ({', '.join(sp.EXITS)})\n"
+             f"(같은 시각 지표는 묶어서 판단, 최대 {GROUP_WAIT:g}초 기다림), 발표 30분 30초 뒤 청산 {len(sp.NAMES)}가지 결과 ({', '.join(sp.NAMES)})\n"
              f"지표 {len(pol)}개 극성 사용")
     with bot.running("⏸ 종료"):
         last_alive = 0.0
@@ -293,7 +293,7 @@ def main():
                     "entry_delay_ms": tr["entry_ms"] - to_ms(tr["release"]), "entry_price": tr["entry_price"],
                     "entry_spread": tr["entry_spread"], **res})
                 lines = "\n".join(f"  {k}: {res[f'{k} $/oz']:+.2f} (1초 진입이면 {res.get(f'1초 진입 {k} $/oz', float('nan')):+.2f})"
-                                  for k in sp.EXITS)
+                                  for k in sp.NAMES)
                 bot.send(f"📊 {tr['release']:%H:%M} 모의 {'매수' if tr['side'] > 0 else '매도'} 결과 ({tr['main_key']}, "
                          f"{'선택 지표' if tr['selected'] else '선택 밖 지표'}, $/oz, 미끄러짐 미포함)\n{lines}")
             time.sleep(POLL_SEC)
