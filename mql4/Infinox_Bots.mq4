@@ -1,24 +1,29 @@
-// Infinox 봇 3개(SAR 단타 / H4 추세 / 아시아 3마틴)를 한 EA로 돌리는 MT4판. XAUUSD 차트 하나(아무 시간봉)에 붙임
+// Infinox 봇 4개(SAR 단타 / H4 추세 / 아시아 3마틴 금 / 아시아 3마틴 XAUEUR)를 한 EA로 돌리는 MT4판. XAUUSD 차트 하나(아무 시간봉)에 붙임
+// (파이썬 실계좌 봇과 같은 구성. 헤지 마틴·뉴스·단타 2마틴·XETUSD 추세는 파이썬에서도 데모 전용이라 MT4에는 없음)
 // 차트 패널:
 // - 전략 체크박스와 전략별 오늘 / 이번주 / 이번달 수익률
 // - 시작 버튼: 선택한 전략만 켬. 정지 버튼: 전부 끔. 켜져 있는 동안 선택을 바꾸면 바로 반영
 // - 끄면 신규 진입만 멈춤. 이미 열린 포지션은 서버 SL/TP와 청산 규칙(금요일·23:00·추세 종료)으로 계속 관리
-// 선택 / 시작 상태는 MQL4\Files\infinox_panel.txt에 저장 -> MT4를 껐다 켜도 그대로
+// 선택 / 시작 상태는 MQL4\Files\infinox_panel.txt에 저장 -> MT4를 껐다 켜도 그대로 (새로 생긴 XAUEUR는 처음엔 꺼진 채)
 // 각 전략 규칙은 mod_martin.mqh / mod_trend.mqh / mod_asia.mqh (파이썬 봇과 같음)
+// XAUEUR 종목명은 차트 종목의 접미사를 그대로 붙임 (XAUUSD# 차트면 XAUEUR#). AsiaEurSymbol로 직접 정할 수도 있음
 // 리포트: 한국시간 평일 21:00에 계좌 리포트 (mod_report.mqh, report_bot.py와 같음)
 #property strict
-#property description "Infinox 봇 3개(SAR 단타 / H4 추세 / 아시아 3마틴) + 켜고 끄는 패널"
+#property description "Infinox 봇 4개(SAR 단타 / H4 추세 / 아시아 3마틴 금·XAUEUR) + 켜고 끄는 패널"
 
 input bool   AllowLive = true;       // 실계좌에서도 실행
 input double LotPer1000 = 0.05;      // SAR 단타: 그날 시작 잔고 1,000$당 lot
 input double MartinMaxLot = 1.0;     // SAR 단타: 넘으면 이 lot으로 깎아서 진입
 input double TrendRiskPct = 2.0;     // H4 추세: 거래당 위험 (잔고 %)
 input double TrendMaxLot = 5.0;      // H4 추세: 최대 lot
-input double AsiaRiskPct = 1.0;      // 아시아 3마틴: 1단계 위험 (잔고 %)
+input double AsiaRiskPct = 0.6;      // 아시아 3마틴 금: 1단계 위험 (잔고 %, XAUEUR와 같이 돌려서 1% -> 0.6%)
+input double AsiaEurRiskPct = 0.6;   // 아시아 3마틴 XAUEUR: 1단계 위험 (잔고 %)
 input double AsiaMaxLot = 1.0;       // 아시아 3마틴: 진입 lot이 이보다 크면 진입 안 함
+input string AsiaEurSymbol = "";     // XAUEUR 종목명 (빈칸이면 XAUEUR + 차트 종목 접미사)
 input int    MagicMartin = 20261017;
 input int    MagicTrend = 20261018;
 input int    MagicAsia = 20261019;
+input int    MagicAsiaEur = 20261024;
 
 #include "infinox_common.mqh"
 #include "mod_martin.mqh"
@@ -28,35 +33,38 @@ input int    MagicAsia = 20261019;
 #define PANEL_FILE "infinox_panel.txt"
 #define PFX "ifx_"
 #define FONT "Malgun Gothic"
+#define N_STRAT 4
 
-string g_names[3] = {"SAR 단타", "H4 추세", "아시아 3마틴"};
-bool   g_sel[3] = {true, true, true};
+string g_names[N_STRAT] = {"SAR 단타", "H4 추세", "아시아 3마틴", "아시아 3마틴·XAUEUR"};
+bool   g_sel[N_STRAT] = {true, true, true, false};
 bool   g_master = false;
 datetime g_lastPanel = 0;
+CAsia  g_asia, g_asiaEur;
 
-int StratMagic(int i) { return i == 0 ? MagicMartin : i == 1 ? MagicTrend : MagicAsia; }
+int StratMagic(int i) { return i == 0 ? MagicMartin : i == 1 ? MagicTrend : i == 2 ? MagicAsia : MagicAsiaEur; }
+string StratSymbol(int i) { return i == 3 ? g_asiaEur.sym : Symbol(); }
 bool IsOn(int i) { return g_master && g_sel[i]; }
 
 #include "mod_report.mqh"
 
 void SavePanel()
 {
-   for (int i = 0; i < 3; i++)
+   for (int i = 0; i < N_STRAT; i++)
       StSet(PANEL_FILE, "sel" + IntegerToString(i), g_sel[i] ? "1" : "0");
    StSet(PANEL_FILE, "master", g_master ? "1" : "0");
 }
 
 void LoadPanel()
 {
-   for (int i = 0; i < 3; i++)
-      g_sel[i] = StGet(PANEL_FILE, "sel" + IntegerToString(i), "1") == "1";
+   for (int i = 0; i < N_STRAT; i++)
+      g_sel[i] = StGet(PANEL_FILE, "sel" + IntegerToString(i), i == 3 ? "0" : "1") == "1";   // XAUEUR는 처음엔 꺼짐
    g_master = StGet(PANEL_FILE, "master", "0") == "1";
 }
 
 void NotifyStart(int i)
 {
    string head = StringFormat("▶️ 시작 (%s %d)\n", AccountKind(), AccountNumber());
-   string body = i == 0 ? M_StartText() : i == 1 ? T_StartText() : A_StartText();
+   string body = i == 0 ? M_StartText() : i == 1 ? T_StartText() : i == 2 ? g_asia.StartText() : g_asiaEur.StartText();
    Send(g_names[i], head + body + "\n" + AccountLine());
 }
 
@@ -107,24 +115,26 @@ void Button(string name, int x, int y, int w, int h, string text, color bg, colo
    ObjectSetInteger(0, n, OBJPROP_STATE, false);
 }
 
-double PeriodPct(datetime start, int magic, double &pnl)
+double PeriodPct(datetime start, int magic, string sym, double &pnl)
 {
    pnl = 0;
    for (int i = OrdersHistoryTotal() - 1; i >= 0; i--)
       if (OrderSelect(i, SELECT_BY_POS, MODE_HISTORY) && OrderType() <= OP_SELL && OrderMagicNumber() == magic
-          && OrderSymbol() == Symbol() && OrderCloseTime() >= start)
+          && OrderSymbol() == sym && OrderCloseTime() >= start)
          pnl += OrderProfit() + OrderSwap() + OrderCommission();
    double b0 = BalanceAt(start);
    return b0 > 0 ? pnl / b0 * 100 : 0;
 }
 
-string ReturnText(int magic)
+string ReturnText(int k)
 {
+   int magic = StratMagic(k);
+   string sym = StratSymbol(k);
    datetime now = TimeCurrent(), d0 = DayStart(now);
    datetime w0 = d0 - ((TimeDayOfWeek(d0) + 6) % 7) * 86400;
    datetime m0 = StringToTime(StringFormat("%04d.%02d.01", TimeYear(now), TimeMonth(now)));
    double pd, pw, pm;
-   double rd = PeriodPct(d0, magic, pd), rw = PeriodPct(w0, magic, pw), rm = PeriodPct(m0, magic, pm);
+   double rd = PeriodPct(d0, magic, sym, pd), rw = PeriodPct(w0, magic, sym, pw), rm = PeriodPct(m0, magic, sym, pm);
    return StringFormat("오늘 %+.2f%%   이번주 %+.2f%%   이번달 %+.2f%% (%+.0f$)", rd, rw, rm, pm);
 }
 
@@ -139,7 +149,7 @@ void DrawPanel()
       ObjectSetInteger(0, bg, OBJPROP_XDISTANCE, x0);
       ObjectSetInteger(0, bg, OBJPROP_YDISTANCE, y0);
       ObjectSetInteger(0, bg, OBJPROP_XSIZE, 620);
-      ObjectSetInteger(0, bg, OBJPROP_YSIZE, 178);
+      ObjectSetInteger(0, bg, OBJPROP_YSIZE, 48 + N_STRAT * 32 + 34);
       ObjectSetInteger(0, bg, OBJPROP_BGCOLOR, C'24,28,36');
       ObjectSetInteger(0, bg, OBJPROP_BORDER_TYPE, BORDER_FLAT);
       ObjectSetInteger(0, bg, OBJPROP_COLOR, clrDimGray);
@@ -149,7 +159,7 @@ void DrawPanel()
    Label("title", x0 + 12, y0 + 8, StringFormat("Infinox 자동매매 · %s %d · 잔고 %.2f / 평가 %.2f %s",
                                                 AccountKind(), AccountNumber(), AccountBalance(), AccountEquity(), AccountCurrency()),
          clrWhite, 10);
-   for (int i = 0; i < 3; i++)
+   for (int i = 0; i < N_STRAT; i++)
    {
       int y = y0 + 38 + i * 32;
       // 체크박스: 흰 네모 안에 Wingdings 체크(252). 이름 글자를 눌러도 같이 바뀜
@@ -157,13 +167,14 @@ void DrawPanel()
              clrWhite, C'20,110,220', "Wingdings", 14);
       Label("sel" + IntegerToString(i) + "n", x0 + 42, y + 4, g_names[i], g_sel[i] ? clrWhite : clrGray);
       bool on = IsOn(i);
-      Label("st" + IntegerToString(i), x0 + 160, y + 4, on ? "켜짐" : "꺼짐", on ? clrLime : clrGray);
-      Label("ret" + IntegerToString(i), x0 + 206, y + 4, ReturnText(StratMagic(i)), clrSilver, 9);
+      Label("st" + IntegerToString(i), x0 + 190, y + 4, on ? "켜짐" : "꺼짐", on ? clrLime : clrGray);
+      Label("ret" + IntegerToString(i), x0 + 236, y + 4, ReturnText(i), clrSilver, 9);
    }
-   Button("master", x0 + 12, y0 + 138, 220, 30, g_master ? "■ 전체 정지" : "▶ 선택한 전략 시작",
+   int yb = y0 + 42 + N_STRAT * 32;
+   Button("master", x0 + 12, yb, 220, 30, g_master ? "■ 전체 정지" : "▶ 선택한 전략 시작",
           g_master ? C'170,40,40' : C'30,130,60');
    string hint = g_master ? "켜진 동안 전략 버튼을 누르면 바로 켜지고 꺼짐" : "전략을 고르고 시작을 누르세요";
-   Label("hint", x0 + 244, y0 + 146, hint, clrGray, 9);
+   Label("hint", x0 + 244, yb + 8, hint, clrGray, 9);
    ChartRedraw();
 }
 
@@ -182,14 +193,18 @@ int OnInit()
    TgInit();
    g_login = AccountNumber();
    LoadPanel();
+   string eur = AsiaEurSymbol != "" ? AsiaEurSymbol : "XAUEUR" + StringSubstr(Symbol(), 6);
+   g_asia.Setup(Symbol(), g_names[2], "infinox_asia_state.txt", MagicAsia, AsiaRiskPct);
+   g_asiaEur.Setup(eur, g_names[3], "infinox_asia_xaueur_state.txt", MagicAsiaEur, AsiaEurRiskPct);
    M_Init();
    T_Init();
-   A_Init();
+   g_asia.Init();
+   g_asiaEur.Init();
    R_Init();
    if (g_master)
    {
       string list = "";
-      for (int i = 0; i < 3; i++)
+      for (int i = 0; i < N_STRAT; i++)
          if (g_sel[i])
             list += (list == "" ? "" : ", ") + g_names[i];
       Send("Infinox", StringFormat("▶️ EA 다시 켜짐 (%s %d): 실행 중 %s\n%s", AccountKind(), AccountNumber(),
@@ -216,7 +231,8 @@ void OnTimer()
       return;
    M_Timer(IsOn(0));
    T_Timer(IsOn(1));
-   A_Timer(IsOn(2));
+   g_asia.Timer(IsOn(2));
+   g_asiaEur.Timer(IsOn(3));
    R_Timer();
    if (TimeLocal() - g_lastPanel >= 5)
    {
@@ -248,7 +264,7 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
       if (!g_master)
       {
          string list = "";
-         for (int i = 0; i < 3; i++)
+         for (int i = 0; i < N_STRAT; i++)
             if (g_sel[i])
                list += (list == "" ? "" : ", ") + g_names[i];
          if (list == "")
@@ -258,7 +274,7 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
          {
             g_master = true;
             SavePanel();
-            for (int i = 0; i < 3; i++)
+            for (int i = 0; i < N_STRAT; i++)
                if (g_sel[i])
                   NotifyStart(i);
          }
@@ -267,7 +283,7 @@ void OnChartEvent(const int id, const long &lparam, const double &dparam, const 
       {
          g_master = false;
          SavePanel();
-         for (int i = 0; i < 3; i++)
+         for (int i = 0; i < N_STRAT; i++)
             if (g_sel[i])
                NotifyStop(i);
       }

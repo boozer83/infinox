@@ -44,13 +44,14 @@ string R_Section(string title, datetime start, datetime end, int off)
    double b0 = BalanceAt(s), b1 = BalanceAt(e), dep = Deposits(s, e), base = b0 + dep;
    string out = StringFormat("%s (%s ~ %s)", title, TimeToString(start, TIME_DATE | TIME_MINUTES), TimeToString(end, TIME_DATE | TIME_MINUTES));
    double total = 0;
-   for (int k = 0; k < 3; k++)
+   for (int k = 0; k < N_STRAT; k++)
    {
       int magic = StratMagic(k), n = 0, w = 0;
+      string sym = StratSymbol(k);
       double pnl = 0;
       for (int i = OrdersHistoryTotal() - 1; i >= 0; i--)
          if (OrderSelect(i, SELECT_BY_POS, MODE_HISTORY) && OrderType() <= OP_SELL && OrderMagicNumber() == magic
-             && OrderSymbol() == Symbol() && OrderCloseTime() >= s && OrderCloseTime() < e)
+             && OrderSymbol() == sym && OrderCloseTime() >= s && OrderCloseTime() < e)
          {
             double p = OrderProfit() + OrderSwap() + OrderCommission();
             pnl += p;

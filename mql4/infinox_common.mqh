@@ -273,13 +273,15 @@ string AccountLine()
 double Contract() { return MarketInfo(Symbol(), MODE_LOTSIZE); }
 
 // 0.01 단위 내림, 최소/최대 lot 안으로
-double FloorLot(double x)
+double FloorLotSym(string sym, double x)
 {
-   double step = MarketInfo(Symbol(), MODE_LOTSTEP);
+   double step = MarketInfo(sym, MODE_LOTSTEP);
    double lot = MathFloor(x / step + 1e-9) * step;
-   lot = MathMin(MathMax(lot, MarketInfo(Symbol(), MODE_MINLOT)), MarketInfo(Symbol(), MODE_MAXLOT));
+   lot = MathMin(MathMax(lot, MarketInfo(sym, MODE_MINLOT)), MarketInfo(sym, MODE_MAXLOT));
    return NormalizeDouble(lot, 2);
 }
+
+double FloorLot(double x) { return FloorLotSym(Symbol(), x); }
 
 // 오늘(서버 날짜) 청산된 매매 손익 합 (모든 EA·종목, 입출금 제외)
 double TodayTradePnl()
@@ -314,24 +316,26 @@ double Deposits(datetime start, datetime end)
    return s;
 }
 
-string PctLine(string name, datetime start, int magic)
+string PctLine(string name, datetime start, int magic, string sym)
 {
    double pnl = 0;
    for (int i = OrdersHistoryTotal() - 1; i >= 0; i--)
       if (OrderSelect(i, SELECT_BY_POS, MODE_HISTORY) && OrderType() <= OP_SELL && OrderMagicNumber() == magic
-          && OrderSymbol() == Symbol() && OrderCloseTime() >= start)
+          && OrderSymbol() == sym && OrderCloseTime() >= start)
          pnl += OrderProfit() + OrderSwap() + OrderCommission();
    double b0 = BalanceAt(start) + Deposits(start, TimeCurrent() + 86400);
    return StringFormat("%s %+.2f%% (%+.2f$)", name, b0 > 0 ? pnl / b0 * 100 : 0.0, pnl);
 }
 
-// 오늘 / 이번주 / 이번달 수익률 (reports.summary_line과 같은 모양)
-string SummaryLine(int magic)
+// 오늘 / 이번주 / 이번달 수익률 (reports.summary_line과 같은 모양). sym을 안 주면 차트 종목
+string SummaryLine(int magic, string sym = "")
 {
+   if (sym == "")
+      sym = Symbol();
    datetime now = TimeCurrent(), d0 = DayStart(now);
    datetime w0 = d0 - ((TimeDayOfWeek(d0) + 6) % 7) * 86400;
    datetime m0 = StringToTime(StringFormat("%04d.%02d.01", TimeYear(now), TimeMonth(now)));
-   return PctLine("오늘", d0, magic) + "\n" + PctLine("이번주", w0, magic) + "\n" + PctLine("이번달", m0, magic);
+   return PctLine("오늘", d0, magic, sym) + "\n" + PctLine("이번주", w0, magic, sym) + "\n" + PctLine("이번달", m0, magic, sym);
 }
 
 // 계좌 손실 한도: 평가금이 최고 잔고보다 stopPct% 이상 줄면 멈춤 (상태 파일에 halted로 남음). 막아야 하면 이유, 아니면 ""
@@ -356,18 +360,20 @@ string RiskBlock(string tag, string file, double stopPct)
 }
 
 //---------------------------------------------------------------- 주문
-int MyTicket(int magic)
+int MyTicketSym(string sym, int magic)
 {
    for (int i = OrdersTotal() - 1; i >= 0; i--)
-      if (OrderSelect(i, SELECT_BY_POS, MODE_TRADES) && OrderSymbol() == Symbol() && OrderMagicNumber() == magic
+      if (OrderSelect(i, SELECT_BY_POS, MODE_TRADES) && OrderSymbol() == sym && OrderMagicNumber() == magic
           && OrderType() <= OP_SELL)
          return OrderTicket();
    return -1;
 }
 
-bool MarginOk(string tag, double lot)
+int MyTicket(int magic) { return MyTicketSym(Symbol(), magic); }
+
+bool MarginOkSym(string tag, string sym, double lot)
 {
-   double need = MarketInfo(Symbol(), MODE_MARGINREQUIRED) * lot;
+   double need = MarketInfo(sym, MODE_MARGINREQUIRED) * lot;
    double free = AccountFreeMargin();
    if (need > free * 0.9)
    {
@@ -377,13 +383,17 @@ bool MarginOk(string tag, double lot)
    return true;
 }
 
-// 시장가 진입 후 체결가 기준으로 손절/익절(달러 거리, 0이면 없음)을 서버에 설정. 티켓 또는 -1
-int OpenMarket(string tag, int side, double lot, double slUsd, double tpUsd, int magic, string comment, double slipUsd, double &fill)
+bool MarginOk(string tag, double lot) { return MarginOkSym(tag, Symbol(), lot); }
+
+// 시장가 진입 후 체결가 기준으로 손절/익절(가격 거리, 0이면 없음)을 서버에 설정. 티켓 또는 -1
+int OpenMarketSym(string tag, string sym, int side, double lot, double slUsd, double tpUsd, int magic, string comment,
+                  double slipUsd, double &fill)
 {
    RefreshRates();
-   int slip = (int)MathRound(slipUsd / Point);
-   double price = side == 1 ? Ask : Bid;
-   int tk = OrderSend(Symbol(), side == 1 ? OP_BUY : OP_SELL, lot, price, slip, 0, 0, comment, magic, 0,
+   int digits = (int)MarketInfo(sym, MODE_DIGITS);
+   int slip = (int)MathRound(slipUsd / MarketInfo(sym, MODE_POINT));
+   double price = side == 1 ? MarketInfo(sym, MODE_ASK) : MarketInfo(sym, MODE_BID);
+   int tk = OrderSend(sym, side == 1 ? OP_BUY : OP_SELL, lot, price, slip, 0, 0, comment, magic, 0,
                       side == 1 ? clrDodgerBlue : clrRed);
    if (tk < 0)
    {
@@ -391,8 +401,8 @@ int OpenMarket(string tag, int side, double lot, double slUsd, double tpUsd, int
       return -1;
    }
    fill = OrderSelect(tk, SELECT_BY_TICKET) ? OrderOpenPrice() : price;
-   double sl = slUsd > 0 ? NormalizeDouble(fill - side * slUsd, Digits) : 0;
-   double tp = tpUsd > 0 ? NormalizeDouble(fill + side * tpUsd, Digits) : 0;
+   double sl = slUsd > 0 ? NormalizeDouble(fill - side * slUsd, digits) : 0;
+   double tp = tpUsd > 0 ? NormalizeDouble(fill + side * tpUsd, digits) : 0;
    bool ok = false;
    for (int i = 0; i < 5 && !ok; i++)
    {
@@ -405,13 +415,19 @@ int OpenMarket(string tag, int side, double lot, double slUsd, double tpUsd, int
    return tk;
 }
 
+int OpenMarket(string tag, int side, double lot, double slUsd, double tpUsd, int magic, string comment, double slipUsd, double &fill)
+{
+   return OpenMarketSym(tag, Symbol(), side, lot, slUsd, tpUsd, magic, comment, slipUsd, fill);
+}
+
 bool CloseTicket(string tag, int tk, double slipUsd)
 {
    if (!OrderSelect(tk, SELECT_BY_TICKET) || OrderCloseTime() > 0)
       return false;
    RefreshRates();
-   double px = OrderType() == OP_BUY ? Bid : Ask;
-   bool ok = OrderClose(tk, OrderLots(), px, (int)MathRound(slipUsd / Point), clrYellow);
+   string sym = OrderSymbol();
+   double px = OrderType() == OP_BUY ? MarketInfo(sym, MODE_BID) : MarketInfo(sym, MODE_ASK);
+   bool ok = OrderClose(tk, OrderLots(), px, (int)MathRound(slipUsd / MarketInfo(sym, MODE_POINT)), clrYellow);
    if (!ok)
       Send(tag, StringFormat("❗ 청산 실패: 티켓 %d 오류 %d", tk, GetLastError()));
    return ok;
