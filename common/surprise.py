@@ -16,7 +16,9 @@ from backtests.news_grid import exit_at
 ROOT = Path(__file__).resolve().parent.parent
 CURRENCIES = ("USD", "EUR", "GBP")
 IMPORTANCE = ("moderate", "high")
-S_MIN = 1.5       # 2026-10-24 2.0 -> 1.5 (GPT 검증: 건수 약 1.8배, 2022~24·2025~26 모두 이익 늘어남. 기록의 S로 2 이상만 따로 볼 수 있음)
+S_MIN = 1.5       # 모의 진입 기준 (1.5 이상 전부 기록)
+S_BASE = 2.0      # 기본 기준 (실주문 후보). 1.5~2는 '관찰'로 따로 표시
+                  # 2026-10-24 GPT 틱 검증: 2025~26 1.5는 +105 / 낙폭 45, 2는 +89 / 낙폭 34, 1.5~2 구간 한 번 평균 +0.27 (0일 수 있음)
 MAX_HOLD_MS = 30 * 60_000
 EXITS = {"큰이익추적 5/2.5/15분": ("큰이익추적", 5, 2.5, 15), "합산보호 2/1 30분": ("합산보호", 2, 1, 30),
          "30분 보유": ("시간", 30, None)}
@@ -70,6 +72,11 @@ def contribution(key, actual, forecast, sd, pol):
 def scored_keys(group, sd, pol):
     """그 시각 일정(캘린더) 중 점수에 들어갈 지표 수 = 기다릴 지표 수. 예측치가 있고 극성이 있는 것"""
     return sum(1 for k, fc in group if k in pol and sd.get(k) and fc is not None and not pd.isna(fc))
+
+
+def tier(s):
+    """|S| 2 이상 = 기본, 1.5~2 = 관찰"""
+    return "기본" if abs(s) >= S_BASE else "관찰"
 
 
 def decide(contribs):

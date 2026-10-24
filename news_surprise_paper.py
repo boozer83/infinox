@@ -4,7 +4,7 @@
 2) 판단은 common/surprise.py (백테스트와 같은 계산): 지표마다 기여 = clip(round(z, 2), ±3) x 극성, S = 합
 3) 같은 시각 발표는 묶어서 한 번만 판단: 그 시각 일정(MT5 캘린더 + 실제로 들어온 것) 중 점수 낼 지표가 다 들어오거나,
    첫 지표를 읽고 GROUP_WAIT초가 지나면 판단 (고용지표처럼 여러 개가 같이 나올 때 첫 지표만으로 들어가지 않게)
-4) |S| >= S_MIN (1.5), 엇갈림 없음, 발표 MAX_LAG초 안이면 모의 진입: 판단 ENTRY_DELAY_MS 뒤의 새 틱 가격 (매수 Ask / 매도 Bid)
+4) |S| >= S_MIN (1.5, 2 이상은 [기본] / 1.5~2는 [관찰]로 표시), 엇갈림 없음, 발표 MAX_LAG초 안이면 모의 진입: 판단 ENTRY_DELAY_MS 뒤의 새 틱 가격 (매수 Ask / 매도 Bid)
    (CalendarLive가 실제치를 받은 시각보다 앞선 틱은 안 씀)
 5) 발표 30분 30초 뒤 MT5에서 틱(SAR용으로 발표 8시간 전부터)을 받아 청산 5가지 계산 (발표 30분 직전 틱까지, 백테스트와 같음):
    큰이익추적 5/2.5/15분(기본), 합산보호 2/1 30분, 30분 보유, 큰이익추적+반응30초, 큰이익추적+SAR1분 (5-21). 비교용으로 '발표 1초 뒤(+0.3초) 진입했다면'도 같이
@@ -48,9 +48,9 @@ SIGNALS_CSV = LOG_DIR / "signals.csv"
 TRADES_CSV = LOG_DIR / "trades.csv"
 LIVE_COLS = ["recv_server", "event_time", "delay_ms", "tick_ms", "importance", "currency", "event", "actual",
              "forecast", "previous", "revision", "impact", "event_id", "value_id"]
-SIG_FIELDS = ["event_time", "main_key", "selected", "expected", "got_at_decide", "S_decide", "S_1min", "detail", "first_delay_ms", "decide_delay_ms",
+SIG_FIELDS = ["event_time", "tier", "main_key", "selected", "expected", "got_at_decide", "S_decide", "S_1min", "detail", "first_delay_ms", "decide_delay_ms",
               "entered", "reason"]
-TRADE_FIELDS = (["event_time", "main_key", "selected", "S", "side", "detail", "first_delay_ms", "decide_delay_ms", "entry_time", "entry_delay_ms",
+TRADE_FIELDS = (["event_time", "tier", "main_key", "selected", "S", "side", "detail", "first_delay_ms", "decide_delay_ms", "entry_time", "entry_delay_ms",
                  "entry_price", "entry_spread", "ref_mid"] + [f"{k} $/oz" for k in sp.NAMES]
                 + [f"1초 진입 {k} $/oz" for k in sp.NAMES])
 bot = None
@@ -261,7 +261,7 @@ def main():
                           "entry_spread": round(t.ask - t.bid, 2), "detail": g["detail_decide"],
                           "first_delay": g["first_delay"], "decide_delay": g["decide_delay"]}
                     pending.append(tr)
-                    msg = (f"📝 모의 {'매수' if e['side'] > 0 else '매도'} {e['release']:%H:%M} S {e['S']:+.2f} "
+                    msg = (f"📝 [{sp.tier(e['S'])}] 모의 {'매수' if e['side'] > 0 else '매도'} {e['release']:%H:%M} S {e['S']:+.2f} "
                            f"({g['main']}, {'선택 지표' if g['main'] in selected else '선택 밖 지표'})\n{g['detail_decide']}\n"
                            f"실제치 {g['first_delay'] / 1000:.1f}초 뒤 받음, 진입 {(t.time_msc - to_ms(e['release'])) / 1000:.1f}초 뒤 "
                            f"{price} (스프레드 {t.ask - t.bid:.2f})")
@@ -276,7 +276,7 @@ def main():
                 g = groups.pop(rel)
                 s1 = sp.decide(g["contribs"])[1]
                 append_csv(SIGNALS_CSV, SIG_FIELDS, {
-                    "event_time": rel, "main_key": g["main"], "selected": g["main"] in selected, "expected": g["expected"], "got_at_decide": g["got"], "S_decide": round(g["S_decide"], 2),
+                    "event_time": rel, "tier": sp.tier(g["S_decide"]) if g["entered"] else "", "main_key": g["main"], "selected": g["main"] in selected, "expected": g["expected"], "got_at_decide": g["got"], "S_decide": round(g["S_decide"], 2),
                     "S_1min": round(s1, 2), "detail": "; ".join(g["detail"].values()), "first_delay_ms": g["first_delay"],
                     "decide_delay_ms": g["decide_delay"], "entered": g["entered"], "reason": g["reason"]})
             # 5) 발표 30분 30초 뒤 결과
@@ -287,14 +287,14 @@ def main():
                     bot.send(f"❗ {tr['release']:%H:%M} 모의 매매 결과 계산 실패 (틱 없음)")
                     continue
                 append_csv(TRADES_CSV, TRADE_FIELDS, {
-                    "event_time": tr["release"], "main_key": tr["main_key"], "selected": tr["selected"], "S": tr["S"],
+                    "event_time": tr["release"], "tier": sp.tier(tr["S"]), "main_key": tr["main_key"], "selected": tr["selected"], "S": tr["S"],
                     "side": tr["side"], "detail": tr["detail"],
                     "first_delay_ms": tr["first_delay"], "decide_delay_ms": tr["decide_delay"], "entry_time": ms_str(tr["entry_ms"]),
                     "entry_delay_ms": tr["entry_ms"] - to_ms(tr["release"]), "entry_price": tr["entry_price"],
                     "entry_spread": tr["entry_spread"], **res})
                 lines = "\n".join(f"  {k}: {res[f'{k} $/oz']:+.2f} (1초 진입이면 {res.get(f'1초 진입 {k} $/oz', float('nan')):+.2f})"
                                   for k in sp.NAMES)
-                bot.send(f"📊 {tr['release']:%H:%M} 모의 {'매수' if tr['side'] > 0 else '매도'} 결과 ({tr['main_key']}, "
+                bot.send(f"📊 [{sp.tier(tr['S'])}] {tr['release']:%H:%M} 모의 {'매수' if tr['side'] > 0 else '매도'} 결과 ({tr['main_key']}, "
                          f"{'선택 지표' if tr['selected'] else '선택 밖 지표'}, $/oz, 미끄러짐 미포함)\n{lines}")
             time.sleep(POLL_SEC)
 
