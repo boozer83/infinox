@@ -101,7 +101,6 @@ def main():
     state_path = LOG_DIR / "state.json"
     bot = Trader("리포트", SYMBOL, None, 0, LOG_DIR, "report", live=args.live)   # 주문은 안 냄
     acc = bot.start()
-    bot.name = f"리포트·{bot.kind}"
     log, clock = bot.log, bot.clock
 
     if args.now:

@@ -137,11 +137,11 @@ def exit_at(d):
 
 
 def use_live_paths():
-    global LOG_DIR, TRADES_CSV, STATE_JSON, BOT_JSON, RISK_JSON, STRATEGY
+    """실계좌 실행은 기록을 asia_live_log/에 따로 남김 (텔레그램의 [실계좌] 표시는 Trader가 붙임)"""
+    global LOG_DIR, TRADES_CSV, STATE_JSON, BOT_JSON, RISK_JSON
     LOG_DIR = LOG_DIR.parent / "asia_live_log"
     TRADES_CSV, STATE_JSON = LOG_DIR / "trades.csv", LOG_DIR / "state.json"
     BOT_JSON, RISK_JSON = LOG_DIR / "bot_state.json", LOG_DIR / "risk_state.json"
-    STRATEGY = "아시아 3마틴·실계좌"
 
 
 def use_symbol(sym, live=False):
@@ -155,7 +155,7 @@ def use_symbol(sym, live=False):
     LOG_DIR = Path(__file__).resolve().parent / f"asia_{base.lower()}{'_live' if live else ''}_log"
     TRADES_CSV, STATE_JSON = LOG_DIR / "trades.csv", LOG_DIR / "state.json"
     BOT_JSON, RISK_JSON = LOG_DIR / "bot_state.json", LOG_DIR / "risk_state.json"
-    STRATEGY = f"아시아 3마틴·{base}{'·실계좌' if live else ''}"
+    STRATEGY = f"아시아 3마틴·{base}"
 
 
 # ---------------------------------------------------------------- 지표

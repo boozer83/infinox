@@ -88,12 +88,11 @@ def use_symbol(sym):
 
 
 def use_live_paths():
-    """실계좌 실행은 기록을 trend_live_log/에 따로 남기고, 텔레그램에 실계좌로 표시"""
-    global LOG_DIR, TRADES_CSV, STATE_JSON, SHADOW_JSON, SHADOW_CSV, STRATEGY
+    """실계좌 실행은 기록을 trend_live_log/에 따로 남김 (텔레그램의 [실계좌] 표시는 Trader가 붙임)"""
+    global LOG_DIR, TRADES_CSV, STATE_JSON, SHADOW_JSON, SHADOW_CSV
     LOG_DIR = LOG_DIR.parent / "trend_live_log"
     TRADES_CSV, STATE_JSON, SHADOW_JSON = LOG_DIR / "trades.csv", LOG_DIR / "state.json", LOG_DIR / "shadow.json"
     SHADOW_CSV = LOG_DIR / "shadow_trades.csv"
-    STRATEGY = "H4 추세·실계좌"
 
 
 def compute(df):

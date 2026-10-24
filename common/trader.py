@@ -183,8 +183,9 @@ class Trader:
 
     # ---- 알림
     def send(self, text):
-        """텔레그램 전송 (앞에 전략 이름 표시)"""
-        self.tg.send(f"[{self.name}] {text}")
+        """텔레그램 전송 (앞에 계좌 종류와 전략 이름 표시: [데모 · SAR 단타] / [실계좌 · SAR 단타])"""
+        kind = self.kind if self.acc else ("실계좌" if self.live else "데모")
+        self.tg.send(f"[{kind} · {self.name}] {text}")
 
     def account_line(self):
         a = mt5.account_info()
