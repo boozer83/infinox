@@ -108,5 +108,5 @@ void R_Timer()
       return;
    r_last = d;
    StSet(R_FILE, "last", d);
-   Send("리포트·MT4", R_Text(today, kst - kst % 60));
+   Send("리포트", R_Text(today, kst - kst % 60));
 }

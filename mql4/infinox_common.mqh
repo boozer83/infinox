@@ -256,7 +256,7 @@ bool AccountOk()
       g_login = AccountNumber();
    if (AccountNumber() != g_login)
    {
-      Send("Infinox·MT4", StringFormat("로그인 계좌가 바뀌었습니다 (%d -> %d). 안전을 위해 EA를 멈춥니다.", g_login, AccountNumber()));
+      Send("Infinox", StringFormat("로그인 계좌가 바뀌었습니다 (%d -> %d). 안전을 위해 EA를 멈춥니다.", g_login, AccountNumber()));
       ExpertRemove();
       return false;
    }

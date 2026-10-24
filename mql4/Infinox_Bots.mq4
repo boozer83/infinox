@@ -55,7 +55,7 @@ void LoadPanel()
 
 void NotifyStart(int i)
 {
-   string head = StringFormat("▶️ 시작 (%s %d, MT4)\n", AccountKind(), AccountNumber());
+   string head = StringFormat("▶️ 시작 (%s %d)\n", AccountKind(), AccountNumber());
    string body = i == 0 ? M_StartText() : i == 1 ? T_StartText() : A_StartText();
    Send(g_names[i], head + body + "\n" + AccountLine());
 }
@@ -192,11 +192,11 @@ int OnInit()
       for (int i = 0; i < 3; i++)
          if (g_sel[i])
             list += (list == "" ? "" : ", ") + g_names[i];
-      Send("Infinox·MT4", StringFormat("▶️ EA 다시 켜짐 (%s %d): 실행 중 %s\n%s", AccountKind(), AccountNumber(),
+      Send("Infinox", StringFormat("▶️ EA 다시 켜짐 (%s %d): 실행 중 %s\n%s", AccountKind(), AccountNumber(),
                                        list == "" ? "없음" : list, AccountLine()));
    }
    if (!IsTradeAllowed())
-      Send("Infinox·MT4", "⚠️ MT4의 '자동매매'가 꺼져 있거나 EA 설정에서 '실거래 허용'이 꺼져 있습니다. 켜야 주문이 들어갑니다.");
+      Send("Infinox", "⚠️ MT4의 '자동매매'가 꺼져 있거나 EA 설정에서 '실거래 허용'이 꺼져 있습니다. 켜야 주문이 들어갑니다.");
    DrawPanel();
    EventSetTimer(1);
    return INIT_SUCCEEDED;
@@ -207,7 +207,7 @@ void OnDeinit(const int reason)
    EventKillTimer();
    DeletePanel();
    if (g_master && (reason == REASON_REMOVE || reason == REASON_CLOSE))
-      Send("Infinox·MT4", "⏸ EA가 차트에서 빠졌습니다. 신규 진입이 멈춥니다 (열린 포지션은 서버 SL/TP로만 관리)");
+      Send("Infinox", "⏸ EA가 차트에서 빠졌습니다. 신규 진입이 멈춥니다 (열린 포지션은 서버 SL/TP로만 관리)");
 }
 
 void OnTimer()
