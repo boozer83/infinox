@@ -16,7 +16,6 @@
 """
 import argparse
 import json
-import logging
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -26,10 +25,9 @@ import MetaTrader5 as mt5
 import asia_breakout_trader
 import demo_trader
 import trend_trader
+from common.trader import Trader, account_kind, load_json
 from config import SYMBOL
-from demo_trader import account_kind, check_demo, connect
-from reports import ServerClock, balance_at, deposits, last_weekday_of_month, stats
-from telegram_notify import Notifier
+from reports import balance_at, deposits, last_weekday_of_month, stats
 
 KST = timezone(timedelta(hours=9))
 REPORT_HOUR = 21
@@ -41,16 +39,6 @@ STRATS = (("SAR 단타", demo_trader.MAGIC, SYMBOL), ("H4 추세", trend_trader.
 WEEKDAYS = "월화수목금토일"
 
 LOG_DIR = Path(__file__).resolve().parent / "report_log"
-log = logging.getLogger("report")
-
-
-def setup_logging():
-    LOG_DIR.mkdir(exist_ok=True)
-    fmt = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
-    for h in (logging.FileHandler(LOG_DIR / "events.log", encoding="utf-8"), logging.StreamHandler()):
-        h.setFormatter(fmt)
-        log.addHandler(h)
-    log.setLevel(logging.INFO)
 
 
 def prev_weekday(d):
@@ -102,13 +90,6 @@ def report_text(today, now, off):
     return "\n\n".join(parts)
 
 
-def load_state(path):
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except (FileNotFoundError, ValueError):
-        return {}
-
-
 def main():
     global LOG_DIR
     ap = argparse.ArgumentParser()
@@ -117,56 +98,38 @@ def main():
     args = ap.parse_args()
     if args.live:
         LOG_DIR = LOG_DIR.parent / "report_live_log"
-    setup_logging()
     state_path = LOG_DIR / "state.json"
-    connect(args.live)
-    acc = check_demo(args.live)
-    tg = Notifier()
-    tag = f"[리포트·{account_kind(acc)}]"
-    clock = ServerClock(SYMBOL)
-    clock.update()
+    bot = Trader("리포트", SYMBOL, None, 0, LOG_DIR, "report", live=args.live)   # 주문은 안 냄
+    acc = bot.start()
+    bot.name = f"리포트·{bot.kind}"
+    log, clock = bot.log, bot.clock
 
     if args.now:
         now = datetime.now(KST).replace(second=0, microsecond=0)
-        tg.send(f"{tag} {report_text(now.date(), now, server_hours(clock))}")
-        tg.flush()
+        bot.send(report_text(now.date(), now, server_hours(clock)))
+        bot.tg.flush()
         mt5.shutdown()
         return
 
-    state = load_state(state_path)
+    state = load_json(state_path)
     if not state:   # 첫 실행: 오늘 21:00이 이미 지났으면 오늘 것은 보낸 것으로 침
         now = datetime.now(KST)
         first = now.date() if now.hour >= REPORT_HOUR else now.date() - timedelta(days=1)
         state = {"last": first.isoformat()}
         state_path.write_text(json.dumps(state), encoding="utf-8")
-    log.info(f"시작: 계좌 {acc.login} ({account_kind(acc)}), 평일 {REPORT_HOUR}:00 (한국시간) 리포트, 마지막 전송 {state['last']}")
-    try:
+    log.info(f"시작: 계좌 {acc.login} ({bot.kind}), 평일 {REPORT_HOUR}:00 (한국시간) 리포트, 마지막 전송 {state['last']}")
+    with bot.running("⏸ 리포트 봇 종료"):
         while True:
-            if not mt5.terminal_info():
-                log.warning("터미널 연결 끊김, 재연결 시도")
-                mt5.shutdown()
-                time.sleep(5)
-                connect(args.live)
-            check_demo(args.live, acc.login)
-            clock.update()
+            bot.keep_alive()
             now = datetime.now(KST).replace(second=0, microsecond=0)
             today = now.date()
             if today.weekday() < 5 and now.hour >= REPORT_HOUR and state["last"] < today.isoformat():
                 text = report_text(today, now, server_hours(clock))
-                tg.send(f"{tag} {text}")
+                bot.send(text)
                 state["last"] = today.isoformat()
                 state_path.write_text(json.dumps(state), encoding="utf-8")
                 log.info("리포트 전송\n" + text)
             time.sleep(POLL_SEC)
-    except KeyboardInterrupt:
-        log.info("사용자 종료")
-    except BaseException:
-        log.exception("오류로 종료")
-        tg.send(f"{tag} ❗ 리포트 봇이 오류로 멈췄습니다")
-        raise
-    finally:
-        tg.flush()
-        mt5.shutdown()
 
 
 if __name__ == "__main__":

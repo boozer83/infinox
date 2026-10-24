@@ -12,10 +12,10 @@
   최대 낙폭 85%. 캡처(9~10월 HK 계좌)와 흐름이 맞는지 보려는 관찰용
 상태: hedge_log/state.json (사이클 시작 시각·잔고·단계)
 """
-import json
 import logging
 import time
-from datetime import datetime, timedelta
+from datetime import timedelta
+from pathlib import Path
 
 import MetaTrader5 as mt5
 import numpy as np
@@ -23,10 +23,9 @@ import pandas as pd
 
 import demo_trader as dt
 from backtests.hedge_martin_ticks import near_news
+from common.trader import Trader, load_json, save_json, side_of, side_name
 from config import SYMBOL
 from indicators import atr, psar
-from reports import ServerClock
-from telegram_notify import Notifier
 
 TP_USD = 5.0
 TARGET = 0.01
@@ -38,28 +37,14 @@ NIGHT_OFF = False   # True면 SAR 단타처럼 서버 15:00~21:00(한국 21:00~0
 MAGIC = 20261020
 POLL_SEC = 1.0
 STRATEGY = "헤지 마틴"
-LOG_DIR = dt.Path(__file__).resolve().parent / "hedge_log"
+LOG_DIR = Path(__file__).resolve().parent / "hedge_log"
 STATE_JSON = LOG_DIR / "state.json"
 log = logging.getLogger("hedge")
-
-
-def send(text):
-    tg.send(f"[{STRATEGY}] {text}")
-
-
-def load_state():
-    try:
-        return json.loads(STATE_JSON.read_text(encoding="utf-8"))
-    except (FileNotFoundError, ValueError):
-        return {}
+bot = None         # Trader, main()에서 설정
 
 
 def save_state(st):
-    STATE_JSON.write_text(json.dumps(st, ensure_ascii=False, indent=1), encoding="utf-8")
-
-
-def my_positions():
-    return [p for p in (mt5.positions_get(symbol=SYMBOL) or ()) if p.magic == MAGIC]
+    save_json(STATE_JSON, st, indent=1)
 
 
 def realized(since):
@@ -74,34 +59,16 @@ def lot0(bal):
 
 
 def open_pos(side, lot, level):
-    info, tick = mt5.symbol_info(SYMBOL), mt5.symbol_info_tick(SYMBOL)
-    otype = mt5.ORDER_TYPE_BUY if side == 1 else mt5.ORDER_TYPE_SELL
-    price = tick.ask if side == 1 else tick.bid
-    margin = mt5.order_calc_margin(otype, SYMBOL, lot, price)
-    if margin is None or margin > mt5.account_info().margin_free * 0.9:
-        send(f"⚠️ 증거금 부족으로 {'매수' if side == 1 else '매도'} {lot} lot 진입 안 함")
+    f = bot.open(side, round(lot, 2), f"HM L{level}", tp_dist=TP_USD)
+    if f is None:
         return False
-    tp = round(price + TP_USD * side, info.digits)
-    res = mt5.order_send({"action": mt5.TRADE_ACTION_DEAL, "symbol": SYMBOL, "volume": round(lot, 2), "type": otype,
-                          "price": price, "tp": tp, "deviation": dt.DEVIATION, "magic": MAGIC,
-                          "comment": f"HM L{level}", "type_time": mt5.ORDER_TIME_GTC, "type_filling": dt.filling_mode()})
-    if res is None or res.retcode != mt5.TRADE_RETCODE_DONE:
-        err = f"{res.retcode if res else mt5.last_error()} {res.comment if res else ''}"
-        log.error(f"주문 실패: {err}")
-        send(f"❗ 주문 실패 ({'매수' if side == 1 else '매도'} {lot} lot): {err}")
-        return False
-    log.info(f"진입 {'BUY' if side == 1 else 'SELL'} {lot} lot L{level} @ {res.price} TP {tp}")
+    log.info(f"진입 {'BUY' if side == 1 else 'SELL'} {lot} lot L{level} @ {f.res.price} TP {f.tp}")
     return True
 
 
 def close_all(why):
-    for p in my_positions():
-        tick = mt5.symbol_info_tick(SYMBOL)
-        buy = p.type == mt5.POSITION_TYPE_BUY
-        mt5.order_send({"action": mt5.TRADE_ACTION_DEAL, "symbol": SYMBOL, "volume": p.volume, "position": p.ticket,
-                        "type": mt5.ORDER_TYPE_SELL if buy else mt5.ORDER_TYPE_BUY,
-                        "price": tick.bid if buy else tick.ask, "deviation": dt.DEVIATION, "magic": MAGIC,
-                        "comment": f"HM {why}", "type_time": mt5.ORDER_TIME_GTC, "type_filling": dt.filling_mode()})
+    for p in bot.positions():
+        bot.close(p, f"HM {why}", f"사이클 청산 ({why})")
 
 
 def end_cycle(st, why):
@@ -111,8 +78,8 @@ def end_cycle(st, why):
     msg = {"target": f"사이클 목표 +{TARGET:.0%} 도달", "limit": f"사이클 손실 한도 -{LIMIT:.0%}",
            "tp": "포지션 모두 익절", "max": "최대 단계 다 쓰고 모두 익절"}.get(why, why)
     log.info(f"사이클 끝 ({msg}) 합계 {total:+.2f} 단계 {st['level']}")
-    send(f"{icon} 사이클 끝: {msg}\n합계 {total:+,.2f}$ (시작 잔고 {st['start_bal']:,.2f}의 {total / st['start_bal']:+.2%}), "
-         f"최대 단계 L{st['level']}\n{dt.account_line()}")
+    bot.send(f"{icon} 사이클 끝: {msg}\n합계 {total:+,.2f}$ (시작 잔고 {st['start_bal']:,.2f}의 {total / st['start_bal']:+.2%}), "
+             f"최대 단계 L{st['level']}\n{bot.account_line()}")
     return {}
 
 
@@ -141,31 +108,21 @@ def start_ok(m5, h1, now):
 
 
 def main():
-    global tg
-    LOG_DIR.mkdir(exist_ok=True)
-    fmt = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
-    for h in (logging.FileHandler(LOG_DIR / "events.log", encoding="utf-8"), logging.StreamHandler()):
-        h.setFormatter(fmt)
-        log.addHandler(h)
-    log.setLevel(logging.INFO)
-    dt.connect(False)
-    acc = dt.check_demo(False)
-    tg = Notifier()
-    clock = ServerClock(SYMBOL)
-    st = load_state()
+    global bot
+    bot = Trader(STRATEGY, SYMBOL, MAGIC, dt.DEVIATION, LOG_DIR, "hedge")
+    acc = bot.start()
+    st = load_json(STATE_JSON)
     desc = (f"SAR 단타 신호에 매수·매도 동시 진입, 각자 익절 {TP_USD:g}$ / 손절 없음, SAR 전환마다 2배 추가 (최대 {MAX_LEVEL}단계), "
             f"사이클 +{TARGET:.0%} 청산 / -{LIMIT:.0%} 손절, 뉴스 앞뒤 {NEWS_MIN}분 시작 안 함"
             + (", 미국장(한국 21~03시) 시작 안 함" if NIGHT_OFF else ", 밤에도 시작"))
     log.info(f"시작: 계좌 {acc.login} 잔고 {acc.balance}, {desc}, 이어받은 상태 {st}")
-    send(f"▶️ 데모 시작 ({acc.login})\n전략: {desc}\n시작 lot {lot0(acc.balance)} (1,000$당 {LOT_PER_1000})"
-         + (f"\n진행 중 사이클 이어받음: L{st['level']}" if st else ""))
+    bot.send(f"▶️ 데모 시작 ({acc.login})\n전략: {desc}\n시작 lot {lot0(acc.balance)} (1,000$당 {LOT_PER_1000})"
+             + (f"\n진행 중 사이클 이어받음: L{st['level']}" if st else ""))
     last_bar = None
-    try:
+    with bot.running("⏸ 종료 (열린 포지션은 서버 익절만 걸려 있음, 손절 없음)"):
         while True:
-            dt.check_demo(False, acc.login)
-            clock.update()
-            now = clock.now()
-            pos = my_positions()
+            now = bot.keep_alive()
+            pos = bot.positions()
             if st:
                 real = realized(st["since"])
                 total = real + sum(p.profit + p.swap for p in pos)
@@ -179,13 +136,13 @@ def main():
                     st = end_cycle(st, "tp" if real >= TARGET * st["start_bal"] else "max")
                 if not st:
                     save_state(st)
-            m5 = dt.rates(mt5.TIMEFRAME_M5, dt.M5_BARS)
+            m5 = bot.rates(mt5.TIMEFRAME_M5, dt.M5_BARS)
             if m5 is not None and m5.time.iat[-1] != last_bar:
                 last_bar = m5.time.iat[-1]
                 up = psar(m5.high.values, m5.low.values)
                 flip = (1 if up[-1] else -1) if up[-1] != up[-2] else 0
                 if not st:
-                    h1 = dt.rates(mt5.TIMEFRAME_H1, dt.H1_BARS)
+                    h1 = bot.rates(mt5.TIMEFRAME_H1, dt.H1_BARS)
                     side, why = start_ok(m5, h1, now)
                     if why:
                         log.info(f"신호 있지만 시작 안 함: {why}")
@@ -197,25 +154,16 @@ def main():
                         save_state(st)
                         open_pos(1, l0, 0)
                         open_pos(-1, l0, 0)
-                        send(f"🔀 사이클 시작: 매수·매도 {l0} lot 동시 진입 (SAR 단타 신호 {'매수' if side == 1 else '매도'})\n"
-                             f"목표 +{TARGET * bal:,.2f}$ / 한도 -{LIMIT * bal:,.2f}$\n{dt.account_line()}")
-                elif flip and st["level"] < MAX_LEVEL and not any(
-                        (1 if p.type == mt5.POSITION_TYPE_BUY else -1) == flip for p in my_positions()):
+                        bot.send(f"🔀 사이클 시작: 매수·매도 {l0} lot 동시 진입 (SAR 단타 신호 {side_name(side)})\n"
+                                 f"목표 +{TARGET * bal:,.2f}$ / 한도 -{LIMIT * bal:,.2f}$\n{bot.account_line()}")
+                elif flip and st["level"] < MAX_LEVEL and not any(side_of(p) == flip for p in bot.positions()):
                     st["level"] += 1
                     lot = round(st["l0"] * 2 ** st["level"], 2)
                     save_state(st)
                     if open_pos(flip, lot, st["level"]):
-                        send(f"{'🟢 매수' if flip == 1 else '🔴 매도'} 추가 {lot} lot (L{st['level']}, SAR 전환)\n{dt.account_line()}")
+                        bot.send(f"{'🟢 매수' if flip == 1 else '🔴 매도'} 추가 {lot} lot (L{st['level']}, SAR 전환)\n"
+                                 f"{bot.account_line()}")
             time.sleep(POLL_SEC)
-    except KeyboardInterrupt:
-        send("⏸ 종료 (열린 포지션은 서버 익절만 걸려 있음, 손절 없음)")
-    except BaseException as e:
-        log.exception("오류로 종료")
-        send(f"❗ 오류로 멈췄습니다: {e}")
-        raise
-    finally:
-        tg.flush()
-        mt5.shutdown()
 
 
 if __name__ == "__main__":

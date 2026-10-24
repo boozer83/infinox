@@ -14,7 +14,6 @@ demo_trader.py의 함수를 그대로 쓰고 magic·기록 폴더·마틴 계산
 """
 import math
 import sys
-from datetime import datetime, timezone
 
 import MetaTrader5 as mt5
 
@@ -40,7 +39,7 @@ dt.STRATEGY_DESC = (f"SAR 단타와 같은 진입·청산, 지면 다음 lot은 
 def martin_state(now):
     """오늘(서버 날짜) 이 봇이 청산한 거래로 (단계, 오늘 쉼 여부, 시작 lot). CHAIN도 갱신"""
     global CHAIN
-    day_start = int(datetime(now.year, now.month, now.day, tzinfo=timezone.utc).timestamp())
+    day_start = dt.day_start_ts(now)
     deals = mt5.history_deals_get(day_start, day_start + 2 * 86400) or ()
     closes = sorted((d for d in deals if d.magic == dt.MAGIC and d.symbol == SYMBOL and d.entry == mt5.DEAL_ENTRY_OUT),
                     key=lambda d: d.time_msc)
@@ -75,15 +74,15 @@ def notify_close(row):
     profit = float(row["profit"])
     bal = mt5.account_info().balance
     pct = profit / (bal - profit) * 100 if bal - profit > 0 else 0.0
-    level, stopped, base = martin_state(dt.clock.now())
+    level, stopped, base = martin_state(dt.bot.clock.now())
     icon = {"TP": "✅ 익절", "SL": "❌ 손절", "FRIDAY": "⏹ 금요일 청산", "SAR": "↩️ 반대 콩 청산"}.get(row["result"], "⏹ 청산")
     nxt = f"오늘 {STOP_STREAK}연속 손절 -> 오늘은 쉼 (내일 시작 lot부터)" if stopped else \
         f"다음 진입 {level_text(level)} ({lot_for(level, base)} lot)"
     dt.log.info(f"청산 {row['result']} @ {row['close_price']} 손익 {profit} -> {nxt}")
-    dt.send(f"{icon} {row.get('side', '')} {row.get('lot', '')} lot\n"
-            f"{row.get('fill_price', '')} → {row['close_price']}\n"
-            f"손익 {profit:+,.2f}$ ({pct:+.2f}%)\n{nxt}\n"
-            f"{dt.account_line()}\n{dt.summary_line(dt.clock.now(), dt.MAGIC, SYMBOL)}")
+    dt.bot.send(f"{icon} {row.get('side', '')} {row.get('lot', '')} lot\n"
+                f"{row.get('fill_price', '')} → {row['close_price']}\n"
+                f"손익 {profit:+,.2f}$ ({pct:+.2f}%)\n{nxt}\n"
+                f"{dt.bot.account_line()}\n{dt.bot.summary()}")
 
 
 dt.martin_state, dt.lot_for, dt.level_text, dt.notify_close = martin_state, lot_for, level_text, notify_close
