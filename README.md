@@ -19,6 +19,9 @@ Infinox MT5 계좌로 금(XAUUSD)을 거래하는 파이썬 자동매매 봇들�
 | `news_trader.py` (뉴스 양방향) | 20261021 | O | | 미국 CPI·고용·FOMC 발표 30초 전 양방향, 체결·미끄러짐 측정용 |
 | `sar_martin_trader.py` (단타 2마틴) | 20261022 | O | | SAR 단타 + 진 만큼만 되찾는 2마틴, 2연속 손절이면 그날 쉼 |
 | `trend_trader.py --symbol XETUSD` | 20261023 | O | | H4 추세를 이더리움에 |
+| `index_trader.py --symbol NAS100` (나스닥 첫30분) | 20261025 | O | | 본장 첫 30분이 ATR x 0.2 넘게 움직인 방향, 손절 ATR x 1, 마감 전 청산, 거래당 위험 0.25% |
+| `index_trader.py --symbol GER40` (독일 ORB 매도) | 20261026 | O | | Xetra 처음 30분 저가를 깨면 매도, 손절 범위 가운데, 마감 전 청산 |
+| `news_surprise_paper.py` (서프라이즈 모의) | - | O | | 실제치 서프라이즈 방향 모의 매매 (주문 없음), |S|>=2 [기본] / 1.5~2 [관찰] |
 | `report_bot.py` (리포트) | - | O | O | 한국시간 평일 21:00 계좌별 전략 손익 리포트 |
 
 각 봇의 자세한 규칙과 백테스트 근거는 파일 맨 위 설명에 있습니다. 봇들이 같이 쓰는 MT5 연결·주문·기록·알림은 `common/trader.py`에 있습니다.

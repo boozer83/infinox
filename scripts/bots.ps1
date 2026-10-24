@@ -7,7 +7,7 @@ param([ValidateSet("demo", "live", "all", "status", "stop-demo", "stop-live")][s
 
 $Dir = Split-Path $PSScriptRoot -Parent   # infinox 폴더 (이 파일은 scripts/ 안)
 $Bots = @("demo_trader.py", "trend_trader.py", "asia_breakout_trader.py", "report_bot.py")
-$DemoOnly = @("hedge_martin_trader.py", "news_trader.py", "news_surprise_paper.py", "sar_martin_trader.py", "trend_trader.py --symbol XETUSD", "asia_breakout_trader.py --symbol XAUEUR")   # demo account only (no --live)
+$DemoOnly = @("hedge_martin_trader.py", "news_trader.py", "news_surprise_paper.py", "index_trader.py --symbol NAS100", "index_trader.py --symbol GER40", "sar_martin_trader.py", "trend_trader.py --symbol XETUSD", "asia_breakout_trader.py --symbol XAUEUR")   # demo account only (no --live)
 $LiveExtra = @("asia_breakout_trader.py --symbol XAUEUR")   # live account too (symbol XAUEUR#), on top of $Bots
 $DemoTerminal = "C:\Program Files\Infinox MetaTrader 5 Terminal\terminal64.exe"
 $LiveEnv = @{ MT5_TERMINAL_PATH = "C:\MT5_LIVE\terminal64.exe"; MT5_PORTABLE = "1"; MT5_SYMBOL = "XAUUSD#" }
