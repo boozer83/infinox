@@ -61,7 +61,7 @@ string R_Section(string title, datetime start, datetime end, int off)
          }
       total += pnl;
       string trades = n > 0 ? StringFormat("%d건 (익절 %d / 손절 %d, 승률 %.0f%%)", n, w, n - w, w * 100.0 / n) : "거래 없음";
-      out += StringFormat("\n• %s: %+.2f%% (%+.2f$) · %s", g_names[k], base > 0 ? pnl / base * 100 : 0.0, pnl, trades);
+      out += StringFormat("\n• %s: %+.2f%% (%+.2f$) · %s", StratName(k), base > 0 ? pnl / base * 100 : 0.0, pnl, trades);
    }
    out += StringFormat("\n합계 %+.2f%% (%+.2f$)\n잔고 %.2f → %.2f", base > 0 ? total / base * 100 : 0.0, total, b0, b1);
    if (dep > 0)

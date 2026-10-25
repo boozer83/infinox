@@ -59,7 +59,7 @@ from pandas.tseries.holiday import (AbstractHolidayCalendar, Holiday, USLaborDay
                                     USMemorialDay, USPresidentsDay, USThanksgivingDay, nearest_workday)
 
 from common.trader import Trader, append_csv, load_json, save_json
-from config import CONTRACT, SYMBOL
+from config import CONTRACT, SYMBOL, live_symbol
 
 # 전략 (서버시간)
 RANGE_FROM = "01:05"       # 아시아 레인지 시작 봉
@@ -149,7 +149,7 @@ def use_symbol(sym, live=False):
     XAUEUR 2022~2026 틱 백테스트: 전반 +75% / 후반 +126%, 낙폭 11~13%, 금 아시아와 같은 날 같은 방향 95%"""
     global SYMBOL, MAGIC, RISK_PCT, LOG_DIR, TRADES_CSV, STATE_JSON, BOT_JSON, RISK_JSON, STRATEGY
     base = sym.rstrip("#")
-    SYMBOL = base + "#" if live else base
+    SYMBOL = live_symbol(base) if live else base
     MAGIC = SYMBOL_MAGIC.get(base, MAGIC)
     RISK_PCT = SYMBOL_RISK.get(base, RISK_PCT)
     LOG_DIR = Path(__file__).resolve().parent / "logs" / f"asia_{base.lower()}{'_live' if live else ''}_log"

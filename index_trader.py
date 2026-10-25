@@ -1,4 +1,4 @@
-"""데모 전용 지수 장중 봇 (docs/hk_program.md 5-23 ~ 5-25, 백테스트 backtests/index_intraday.py / index_ticks.py)
+"""지수 장중 봇 (데모, --live면 실계좌. docs/hk_program.md 5-23 ~ 5-25, 백테스트 backtests/index_intraday.py / index_ticks.py)
 
 --symbol NAS100 : 첫 30분 방향. 본장(뉴욕 09:30 = 서버 16:30) 첫 30분 Bid 움직임이 ATR x FIRST_MIN 넘으면
                   그 방향으로 시가 30분 + 0.3초 뒤 시장가 진입, 손절 = 진입 순간 Bid - ATR (매수) / Ask + ATR (매도), MT5 SL로 걺
@@ -27,6 +27,7 @@ lot = 거래당 위험 RISK_PCT% / 1 lot 손실(order_calc_profit), 종목 lot �
       틱 기준 최대 역행, 청산 요청·체결가·미끄러짐, 부분 청산 평균가), events.log, 텔레그램
 
 사용법: python index_trader.py --symbol NAS100        (데모 계좌, Ctrl+C로 종료)
+        python index_trader.py --symbol NAS100 --live (실계좌, 종목명 NAS100.a, 기록 logs/index_nas100_live_log/)
         python index_trader.py --symbol GER40 --dry  (오늘 본장 시각·ATR만 보고 끝)
 """
 import argparse
@@ -44,12 +45,13 @@ import numpy as np
 from backtests.index_intraday import SESS, server
 from common.exchange_calendar import de_closed, us_close_time, us_closed
 from common.trader import Trader, append_csv, load_json, side_name
-from config import SYMBOL as CLOCK_SYMBOL
+from config import SYMBOL as CLOCK_SYMBOL, live_symbol
 from reports import ServerClock
 
-VERSION = "2026-10-25b"
+VERSION = "2026-10-25c"
 MAGICS = {"NAS100": 20261025, "GER40": 20261026}
 NAMES = {"NAS100": "나스닥 첫30분", "GER40": "독일 ORB 매도"}
+TICKER = {}              # 전략 이름(NAS100) -> 이 계좌의 종목명, main()에서 설정
 FIRST_MIN, FIRST_STOP = 0.2, 1.0
 ORB_MIN, ENTRY_UNTIL = 30, 180
 ATR_DAYS = 14
@@ -85,9 +87,14 @@ def utc(t):
     return t.replace(tzinfo=timezone.utc)
 
 
+def broker(sym):
+    """이 계좌의 종목명 (실계좌는 NAS100.a)"""
+    return TICKER.get(sym, sym)
+
+
 def m1(sym, t0, t1):
     """t0 <= 봉 시작 < t1 1분봉 (서버시간)"""
-    r = mt5.copy_rates_range(sym, mt5.TIMEFRAME_M1, utc(t0), utc(t1 - timedelta(seconds=1)))
+    r = mt5.copy_rates_range(broker(sym), mt5.TIMEFRAME_M1, utc(t0), utc(t1 - timedelta(seconds=1)))
     if r is None or not len(r):
         return None
     r = r[r["time"] < int(utc(t1).timestamp())]
@@ -111,7 +118,7 @@ def m1_full(sym, t0, t1):
             if (sym, s) in _tick_bars:
                 bar = _tick_bars[(sym, s)]
             else:
-                tk = mt5.copy_ticks_range(sym, utc(k), utc(k + timedelta(minutes=1)), mt5.COPY_TICKS_INFO)
+                tk = mt5.copy_ticks_range(broker(sym), utc(k), utc(k + timedelta(minutes=1)), mt5.COPY_TICKS_INFO)
                 if tk is None:
                     return None
                 b = tk["bid"][(tk["time_msc"] < (s + 60) * 1000) & (tk["bid"] > 0)]
@@ -158,7 +165,7 @@ def ger_first_break(bars, lo):
 def fresh(sym):
     """터미널 연결 + 그 종목 틱이 TICK_FRESH_SEC 안에 들어왔는지"""
     ti = mt5.terminal_info()
-    t = mt5.symbol_info_tick(sym)
+    t = mt5.symbol_info_tick(broker(sym))
     if ti is None or not ti.connected or t is None or not t.time_msc:
         return None
     if (bot.clock.now() - datetime.fromtimestamp(t.time_msc / 1000, timezone.utc).replace(tzinfo=None)).total_seconds() > TICK_FRESH_SEC:
@@ -499,10 +506,12 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--symbol", required=True, choices=list(MAGICS))
     ap.add_argument("--dry", action="store_true")
+    ap.add_argument("--live", action="store_true", help="실계좌에서 실행 (종목명은 config.LIVE_SYMBOLS)")
     args = ap.parse_args()
     sym = args.symbol
-    log_dir = Path(__file__).resolve().parent / "logs" / f"index_{sym.lower()}_log"
-    bot = Trader(NAMES[sym], sym, MAGICS[sym], DEVIATION, log_dir, f"idx_{sym}")
+    TICKER[sym] = live_symbol(sym) if args.live else sym
+    log_dir = Path(__file__).resolve().parent / "logs" / f"index_{sym.lower()}{'_live' if args.live else ''}_log"
+    bot = Trader(NAMES[sym], broker(sym), MAGICS[sym], DEVIATION, log_dir, f"idx_{sym}", live=args.live)
     acc = bot.start(dry_run=args.dry)
     bot.clock = ServerClock(CLOCK_SYMBOL)          # 지수 틱은 장 밖에서 멈추거나 비어 있어서 서버 시계는 금 틱으로
     mt5.symbol_select(CLOCK_SYMBOL, True)
@@ -515,11 +524,11 @@ def main():
         print(f"서버 {now:%Y-%m-%d %H:%M:%S}, 오늘 본장 {b[0]:%H:%M}~{b[1]:%H:%M}" if b else "오늘 휴장", f"ATR {atr_of(sym, now.date())}")
         mt5.shutdown()
         return
-    lock(sym)
+    lock(sym + ("_live" if args.live else ""))
     bot.state_path = log_dir / "state.json"
     desc = (f"본장 첫 30분이 ATR x {FIRST_MIN:g} 넘게 움직이면 그 방향, 손절 ATR x {FIRST_STOP:g}" if sym == "NAS100"
             else f"본장 처음 {ORB_MIN}분 저가를 1분봉 종가가 처음 깨면 매도 (진입이 시가 + {ENTRY_UNTIL // 60}시간 전일 때), 손절 범위 가운데")
-    bot.send(f"▶️ 데모 시작 ({acc.login}, {VERSION})\n전략: {desc}, 마감 {CLOSE_BEFORE}초 전 청산, 거래당 위험 {RISK_PCT:g}% "
+    bot.send(f"▶️ {'실계좌' if args.live else '데모'} 시작 ({acc.login}, {VERSION})\n전략: {desc}, 마감 {CLOSE_BEFORE}초 전 청산, 거래당 위험 {RISK_PCT:g}% "
              f"(최소 lot 위험 {MAX_RISK_PCT:g}% 넘으면 건너뜀)")
     st = load_json(bot.state_path)
     bot.log.info(f"시작 {VERSION}, 이어받은 상태 {st}")
@@ -552,7 +561,7 @@ def main():
                         bot.log.info(f"가운데 손절 복원 {st['mid']:.2f}")
                     else:
                         st.setdefault("closing", "범위 복원 실패, 정리")
-                t = mt5.symbol_info_tick(sym)
+                t = mt5.symbol_info_tick(broker(sym))
                 if b is None or p_day != d or now >= b[1] - timedelta(seconds=CLOSE_BEFORE):
                     close_all(pos, "마감 청산" if p_day == d else "지난 날 포지션 청산", st)
                 elif st.get("closing"):

@@ -12,6 +12,13 @@ TERMINAL_PATH = os.environ.get("MT5_TERMINAL_PATH") or None
 PORTABLE = os.environ.get("MT5_PORTABLE") == "1"
 SYMBOL = os.environ.get("MT5_SYMBOL") or "XAUUSD"
 CONTRACT = 100          # 금 1 lot = 100온스
+# 실계좌(88004888) 종목명. 새 종목을 실계좌에서 돌릴 때는 여기만 추가 (데모는 이름 그대로)
+LIVE_SYMBOLS = {"XAUUSD": "XAUUSD#", "XAUEUR": "XAUEUR#", "XETUSD": "XETUSD.a", "NAS100": "NAS100.a", "GER40": "GER40.a"}
+
+
+def live_symbol(base):
+    """데모 종목명 -> 실계좌 종목명 (표에 없으면 그대로)"""
+    return LIVE_SYMBOLS.get(base, base)
 
 
 def mt5_init():

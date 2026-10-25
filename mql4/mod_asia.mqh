@@ -65,7 +65,7 @@ int A_ExitAt(datetime day) { return A_EarlyCloseDay(day) ? A_EARLY_EXIT_AT : A_E
 string A_Hm(int m) { return StringFormat("%02d:%02d", m / 60, m % 60); }
 
 //---------------------------------------------------------------- 전략 (종목 하나)
-class CAsia
+class CAsia : public CStrat
 {
 public:
    string   sym, tag, st;
@@ -82,10 +82,12 @@ public:
    double   datr, ph, pl;            // 일봉 ATR, 전일 고가 / 저가
    int      mom;
 
-   void Setup(string s, string t, string file, int mg, double rp)
+   void Setup(string s, string t, string file, int mg, double rp, bool on)
    {
       sym = s;
       tag = t;
+      name = t;
+      defOn = on;
       st = file;
       magic = mg;
       riskPct = rp;
@@ -113,6 +115,9 @@ public:
                           "전일 고저 돌파면 가중치 %g 아니면 %g, 23:00 청산 (미국 조기 마감일 19:30), 마틴 %d단계 (v2), 위험 %g%%",
                           A_MOM_DAYS, A_ATR_MULT, A_TP_RATIO, A_SL_RATIO, A_W_STRONG, A_W_WEAK, A_MARTIN_STEPS, riskPct);
    }
+
+   int    Magic() { return magic; }
+   string Sym() { return sym; }
 
    int Level() { return (int)StringToInteger(StGet(st, "level", "0")); }
 

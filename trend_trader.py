@@ -27,7 +27,8 @@
   python trend_trader.py            # 실행 (Ctrl+C로 종료)
   python trend_trader.py --dry-run  # 주문 없이 신호만 계산해서 출력 (텔레그램 전송 안 함)
   python trend_trader.py --live     # 실계좌에서 실행 (데모에서 충분히 확인한 뒤에만)
-  python trend_trader.py --symbol XETUSD   # 이더리움 H4 (데모 전용, 매직 20261023, 기록 logs/trend_xetusd_log/)
+  python trend_trader.py --symbol XETUSD   # 이더리움 H4 (매직 20261023, 기록 logs/trend_xetusd_log/)
+  python trend_trader.py --symbol XETUSD --live   # 실계좌 (종목명 XETUSD.a, 기록 logs/trend_xetusd_live_log/)
 """
 import argparse
 import logging
@@ -39,7 +40,7 @@ import MetaTrader5 as mt5
 import numpy as np
 
 from common.trader import Trader, append_csv, load_json, save_json, side_name, side_of
-from config import CONTRACT, SYMBOL
+from config import CONTRACT, SYMBOL, live_symbol
 from indicators import atr
 
 # 전략
@@ -75,13 +76,13 @@ STRATEGY_DESC = (f"4시간봉 {N_ENTRY}봉 돌파 추세추종, {N_EXIT}봉 반�
                  + (", 4시간봉 구름 방향과 같을 때만 진입" if CLOUD_FILTER else ""))
 
 
-def use_symbol(sym):
-    """금 말고 다른 종목으로 (--symbol, 데모 전용): 매직·기록 폴더·이름을 따로 씀
+def use_symbol(sym, live=False):
+    """금 말고 다른 종목으로 (--symbol): 매직·기록 폴더·이름을 따로 씀. 실계좌 종목명은 config.LIVE_SYMBOLS
     이더리움(XETUSD) 2022~2026 틱 백테스트: 연 +11~51%, 낙폭 7~19%, 금 H4와 월별 손익 상관 0.02 (backtests/others_scan.py)"""
     global SYMBOL, MAGIC, LOG_DIR, TRADES_CSV, STATE_JSON, SHADOW_JSON, SHADOW_CSV, STRATEGY
-    SYMBOL = sym
+    SYMBOL = live_symbol(sym) if live else sym
     MAGIC = SYMBOL_MAGIC.get(sym, MAGIC)
-    LOG_DIR = LOG_DIR.parent / f"trend_{sym.lower()}_log"
+    LOG_DIR = LOG_DIR.parent / f"trend_{sym.lower()}{'_live' if live else ''}_log"
     TRADES_CSV, STATE_JSON, SHADOW_JSON = LOG_DIR / "trades.csv", LOG_DIR / "state.json", LOG_DIR / "shadow.json"
     SHADOW_CSV = LOG_DIR / "shadow_trades.csv"
     STRATEGY = f"H4 추세·{sym}"
@@ -208,14 +209,12 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true", help="주문 없이 신호만 계산")
     ap.add_argument("--live", action="store_true", help="실계좌에서도 실행 (기본은 데모 전용)")
-    ap.add_argument("--symbol", help="금 말고 다른 종목 (데모 전용, 예: XETUSD)")
+    ap.add_argument("--symbol", help="금 말고 다른 종목 (예: XETUSD)")
     args = ap.parse_args()
-    if args.symbol and args.live:
-        raise SystemExit("--symbol은 데모에서만 씁니다")
     if args.live:
         use_live_paths()
     if args.symbol:
-        use_symbol(args.symbol)
+        use_symbol(args.symbol, args.live)
     bot = Trader(STRATEGY, SYMBOL, MAGIC, DEVIATION, LOG_DIR, "trend", live=args.live)
     acc = bot.start(args.dry_run)
     CONTRACT = mt5.symbol_info(SYMBOL).trade_contract_size   # 금 100, 이더리움 1

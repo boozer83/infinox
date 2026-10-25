@@ -115,11 +115,27 @@ void StSet(string file, string key, string val)
    FileClose(h);
 }
 
-//---------------------------------------------------------------- 봉 / 지표
-// 완성된 봉(shift 1부터) count개를 오래된 것부터 배열에 담음. 담은 개수 반환
-int LoadBars(int tf, int count, datetime &t[], double &h[], double &l[], double &c[])
+//---------------------------------------------------------------- 전략 공통 모양
+// 전략 하나 = CStrat를 이은 클래스 하나 (mod_*.mqh). Infinox_Bots.mq4는 목록에 넣기만 하면 패널·알림·타이머가 붙음
+// Timer: 1초마다 (on = 패널에서 켜짐. 꺼져 있어도 열린 포지션 관리는 계속), Fast: 0.1초마다 (빠른 진입이 필요한 전략만)
+class CStrat
 {
-   int n = MathMin(count, iBars(NULL, tf) - 1);
+public:
+   string name;                      // 패널·알림 이름
+   bool   defOn;                     // 처음 켤 때 선택돼 있는지 (패널 파일이 없을 때)
+   virtual void   Init() {}
+   virtual void   Timer(bool on) {}
+   virtual void   Fast(bool on) {}
+   virtual string StartText() { return ""; }
+   virtual int    Magic() { return 0; }
+   virtual string Sym() { return Symbol(); }
+};
+
+//---------------------------------------------------------------- 봉 / 지표
+// sym 종목의 완성된 봉(shift 1부터) count개를 오래된 것부터 배열에 담음. 담은 개수 반환
+int LoadBarsSym(string sym, int tf, int count, datetime &t[], double &h[], double &l[], double &c[])
+{
+   int n = MathMin(count, iBars(sym, tf) - 1);
    if (n <= 0)
       return 0;
    ArrayResize(t, n);
@@ -129,12 +145,17 @@ int LoadBars(int tf, int count, datetime &t[], double &h[], double &l[], double 
    for (int i = 0; i < n; i++)
    {
       int s = n - i;
-      t[i] = iTime(NULL, tf, s);
-      h[i] = iHigh(NULL, tf, s);
-      l[i] = iLow(NULL, tf, s);
-      c[i] = iClose(NULL, tf, s);
+      t[i] = iTime(sym, tf, s);
+      h[i] = iHigh(sym, tf, s);
+      l[i] = iLow(sym, tf, s);
+      c[i] = iClose(sym, tf, s);
    }
    return n;
+}
+
+int LoadBars(int tf, int count, datetime &t[], double &h[], double &l[], double &c[])
+{
+   return LoadBarsSym(NULL, tf, count, t, h, l, c);
 }
 
 // 파라볼릭 SAR(0.02, 0.2): 각 봉이 상승 추세면 true (indicators.psar와 같음)
@@ -271,6 +292,18 @@ string AccountLine()
 }
 
 double Contract() { return MarketInfo(Symbol(), MODE_LOTSIZE); }
+
+// 계좌 통화로 1 lot이 가격 1 움직일 때 손익 (금 100, 이더리움 1, 유로 손익은 달러로 바꿔서)
+double PerLot(string sym)
+{
+   if (sym == Symbol())
+      return Contract();
+   double ts = MarketInfo(sym, MODE_TICKSIZE);
+   return ts > 0 ? MarketInfo(sym, MODE_TICKVALUE) / ts : 0;
+}
+
+// 종목을 시장 감시에 넣고 시세가 있으면 true
+bool UseSymbol(string sym) { return sym != "" && SymbolSelect(sym, true) && MarketInfo(sym, MODE_BID) > 0; }
 
 // 0.01 단위 내림, 최소/최대 lot 안으로
 double FloorLotSym(string sym, double x)

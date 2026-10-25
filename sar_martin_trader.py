@@ -1,4 +1,4 @@
-"""데모 전용: SAR 단타 + 2마틴 (진 만큼만 되찾는 lot) + 2연속 손절이면 그날 쉬기 + 매일 초기화
+"""SAR 단타 + 2마틴 (진 만큼만 되찾는 lot) + 2연속 손절이면 그날 쉬기 + 매일 초기화
 
 backtests/sar_martin.py "2마틴 + 2연속 손절 쉬기 + 매일 초기화"와 같은 규칙
 - 진입·청산은 demo_trader.py(SAR 단타)와 똑같음 (같은 신호, 손절 7.5 / 익절 3, 반대 콩 청산, 쉬기 필터 전부)
@@ -8,12 +8,12 @@ backtests/sar_martin.py "2마틴 + 2연속 손절 쉬기 + 매일 초기화"와 
 - 서버 날짜가 바뀌면 묶음 초기화 (어제 손실은 확정, 시작 lot부터)
 백테스트 (2022~24 ATR 금값 비례, 1,000$ 시작 복리): 2022 -12%, 2023 -17%, 2024 +35%, 2025 +19%, 2026 +1,531%,
   최대 낙폭 43%, 최악의 날 -15%, 최대 lot 시작 lot의 2.9배 (마틴 없음: 낙폭 53%, 최악의 날 -13%)
-demo_trader.py의 함수를 그대로 쓰고 magic·기록 폴더·마틴 계산만 바꿈. 기록: logs/sar_martin_log/
+demo_trader.py의 함수를 그대로 쓰고 magic·기록 폴더·마틴 계산만 바꿈. 기록: logs/sar_martin_log/ (실계좌는 logs/sar_martin_live_log/)
 
-사용법: python sar_martin_trader.py   (데모 계좌에서만)
+사용법: python sar_martin_trader.py          (데모 계좌)
+        python sar_martin_trader.py --live   (실계좌. SAR 단타 실계좌 봇과 같은 신호라 같은 시각에 따로 진입함)
 """
 import math
-import sys
 
 import MetaTrader5 as mt5
 
@@ -34,6 +34,13 @@ dt.RISK_JSON, dt.WINRATE_JSON = dt.LOG_DIR / "risk_state.json", dt.LOG_DIR / "wi
 dt.STRATEGY = "단타 2마틴"
 dt.STRATEGY_DESC = (f"SAR 단타와 같은 진입·청산, 지면 다음 lot은 진 금액을 익절 {TP_OZ:g}$로 딱 되찾는 크기 ({MAX_STEP}마틴까지), "
                     f"오늘 {STOP_STREAK}연속 손절이면 그날 쉼, 매일 초기화")
+
+
+def use_live_paths():
+    """실계좌 실행은 기록을 logs/sar_martin_live_log/에 (SAR 단타 실계좌의 live_log와 따로, 뮤텍스 이름도 이 폴더 이름)"""
+    dt.LOG_DIR = dt.LOG_DIR.parent / "sar_martin_live_log"
+    dt.TRADES_CSV, dt.STATE_JSON = dt.LOG_DIR / "trades.csv", dt.LOG_DIR / "state.json"
+    dt.RISK_JSON, dt.WINRATE_JSON = dt.LOG_DIR / "risk_state.json", dt.LOG_DIR / "winrate.json"
 
 
 def martin_state(now):
@@ -86,8 +93,7 @@ def notify_close(row):
 
 
 dt.martin_state, dt.lot_for, dt.level_text, dt.notify_close = martin_state, lot_for, level_text, notify_close
+dt.use_live_paths = use_live_paths
 
 if __name__ == "__main__":
-    if "--live" in sys.argv:
-        raise SystemExit("데모 전용입니다")
     dt.main()

@@ -1,4 +1,4 @@
-"""데모 관찰용 헤지 마틴 (HK MARTIN 구조 재현, backtests/hedge_martin_ticks.py의 START_SIG + CONTINUE 모드와 같은 규칙)
+"""헤지 마틴 (데모 관찰용, --live면 실계좌. HK MARTIN 구조 재현, backtests/hedge_martin_ticks.py의 START_SIG + CONTINUE 모드와 같은 규칙)
 
 - 사이클 시작: SAR 단타(demo_trader)와 같은 신호 봉(5분봉 SAR 전환 + RSI50 + 1시간봉 SAR + 시간/ATR/과열 필터)이 완성되면
   매수·매도를 같은 lot(L0)으로 동시 진입. 중요 지표(USD/EUR/GBP moderate 이상, MT5 캘린더 + ForexFactory) 앞뒤 NEWS_MIN분이면 시작 안 함
@@ -7,11 +7,12 @@
 - 사이클 중 5분봉 SAR이 전환될 때마다 그 방향에 열린 포지션이 없으면 다음 단계 lot(L0 x 2^단계)으로 1개 진입 (최대 MAX_LEVEL)
   포지션이 다 익절로 닫혀도 사이클 목표 전이면 끝내지 않고 다음 전환에 다음 단계로 이어감
 - 사이클 합계(이번 사이클 확정 손익 + 평가손익)가 시작 잔고의 +TARGET%면 전부 청산, -LIMIT%면 전부 청산
-- 주말에도 보유 (백테스트와 같음). 데모 전용 (실계좌 옵션 없음)
+- 주말에도 보유 (백테스트와 같음). 기본 데모, --live면 실계좌 (2026-10-25 사용자 요청, 기록 logs/hedge_live_log/)
 백테스트 (해마다 1만 달러, 2022~2026, 익절 5 / 목표 1% / 한도 30% / 4단계): 2022 -81%, 2023 -32%, 2024 -34%, 2025 +55%, 2026 +33%,
   최대 낙폭 85%. 캡처(9~10월 HK 계좌)와 흐름이 맞는지 보려는 관찰용
 상태: logs/hedge_log/state.json (사이클 시작 시각·잔고·단계)
 """
+import argparse
 import logging
 import time
 from datetime import timedelta
@@ -43,6 +44,13 @@ STATE_JSON = LOG_DIR / "state.json"
 SIGNAL_JSON = LOG_DIR / "signal_state.json"
 log = logging.getLogger("hedge")
 bot = None         # Trader, main()에서 설정
+
+
+def use_live_paths():
+    """실계좌 실행은 기록을 logs/hedge_live_log/에 따로 (뮤텍스 이름도 이 폴더 이름)"""
+    global LOG_DIR, STATE_JSON, SIGNAL_JSON
+    LOG_DIR = LOG_DIR.parent / "hedge_live_log"
+    STATE_JSON, SIGNAL_JSON = LOG_DIR / "state.json", LOG_DIR / "signal_state.json"
 
 
 def save_state(st):
@@ -117,14 +125,19 @@ def start_ok(m5, h1, now):
 
 def main():
     global bot
-    bot = Trader(STRATEGY, SYMBOL, MAGIC, dt.DEVIATION, LOG_DIR, "hedge")
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--live", action="store_true", help="실계좌에서 실행 (기본은 데모)")
+    args = ap.parse_args()
+    if args.live:
+        use_live_paths()
+    bot = Trader(STRATEGY, SYMBOL, MAGIC, dt.DEVIATION, LOG_DIR, "hedge", live=args.live)
     acc = bot.start()
     st = load_json(STATE_JSON)
     desc = (f"SAR 단타 신호에 매수·매도 동시 진입, 각자 익절 {TP_USD:g}$ / 손절 없음, SAR 전환마다 2배 추가 (최대 {MAX_LEVEL}단계), "
             f"사이클 +{TARGET:.0%} 청산 / -{LIMIT:.0%} 손절, 뉴스 앞뒤 {NEWS_MIN}분 시작 안 함"
             + (", 미국장(한국 21~03시) 시작 안 함" if NIGHT_OFF else ", 밤에도 시작"))
     log.info(f"시작: 계좌 {acc.login} 잔고 {acc.balance}, {desc}, 이어받은 상태 {st}")
-    bot.send(f"▶️ 데모 시작 ({acc.login})\n전략: {desc}\n시작 lot {lot0(acc.balance)} (1,000$당 {LOT_PER_1000})"
+    bot.send(f"▶️ {'실계좌' if args.live else '데모'} 시작 ({acc.login})\n전략: {desc}\n시작 lot {lot0(acc.balance)} (1,000$당 {LOT_PER_1000})"
              + (f"\n진행 중 사이클 이어받음: L{st['level']}" if st else ""))
     dt.bot = bot                                       # dt.my_positions / fresh_tick / close_retry가 이 봇(매직)으로 동작
     dt.lock(LOG_DIR.name)
