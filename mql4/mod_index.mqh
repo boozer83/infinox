@@ -69,6 +69,7 @@ public:
    string   sym, tag, st, kind;      // kind: "NAS100" / "GER40"
    int      magic;
    bool     ok;
+   datetime okTry;
    datetime lastTry;
 
    void Setup(string s, string k, string panelName, string file, int mg, bool on)
@@ -81,6 +82,7 @@ public:
       magic = mg;
       defOn = on;
       lastTry = 0;
+      okTry = TimeLocal();
       ok = UseSymbol(sym);
       if (!ok)
          Print("[", tag, "] 종목 ", sym, "을 찾을 수 없어 이 전략은 쉽니다");
@@ -282,7 +284,20 @@ public:
    void Timer(bool on)
    {
       if (!ok)
-         return;
+      {
+         if (TimeLocal() - okTry >= 60)          // 처음에 못 찾은 종목: 1분마다 다시 (주말·시세 받기 전)
+         {
+            okTry = TimeLocal();
+            ok = UseSymbol(sym);
+            if (ok)
+            {
+               Print("[", tag, "] 종목 ", sym, " 찾음 -> 시작");
+               Init();
+            }
+         }
+         if (!ok)
+            return;
+      }
       datetime now = TimeCurrent(), d = DayStart(now), so = 0, sc = 0;
       string day = TimeToString(d, TIME_DATE);
       bool open = Bounds(d, so, sc);

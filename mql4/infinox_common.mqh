@@ -302,8 +302,8 @@ double PerLot(string sym)
    return ts > 0 ? MarketInfo(sym, MODE_TICKVALUE) / ts : 0;
 }
 
-// 종목을 시장 감시에 넣고 시세가 있으면 true
-bool UseSymbol(string sym) { return sym != "" && SymbolSelect(sym, true) && MarketInfo(sym, MODE_BID) > 0; }
+// 종목을 시장 감시에 넣고 종목 정보가 있으면 true (주말엔 시세가 없어도 됨. 못 찾으면 전략이 1분마다 다시 확인)
+bool UseSymbol(string sym) { return sym != "" && SymbolSelect(sym, true) && MarketInfo(sym, MODE_TICKSIZE) > 0; }
 
 // 0.01 단위 내림, 최소/최대 lot 안으로
 double FloorLotSym(string sym, double x)

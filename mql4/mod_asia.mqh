@@ -72,6 +72,7 @@ public:
    int      magic;
    double   riskPct;
    bool     ok;                      // 종목을 쓸 수 있으면 true
+   datetime okTry;
 
    int      ticket;
    datetime lastBar, lastCloseTry;
@@ -96,7 +97,8 @@ public:
       lastCloseTry = 0;
       timeExit = false;
       featDay = 0;
-      ok = SymbolSelect(sym, true) && MarketInfo(sym, MODE_BID) > 0;
+      okTry = TimeLocal();
+      ok = UseSymbol(sym);
       if (!ok)
          Print("[", tag, "] 종목 ", sym, "을 찾을 수 없어 이 전략은 쉽니다");
    }
@@ -333,7 +335,20 @@ public:
    void Timer(bool on)
    {
       if (!ok)
-         return;
+      {
+         if (TimeLocal() - okTry >= 60)          // 처음에 못 찾은 종목: 1분마다 다시 (주말·시세 받기 전)
+         {
+            okTry = TimeLocal();
+            ok = UseSymbol(sym);
+            if (ok)
+            {
+               Print("[", tag, "] 종목 ", sym, " 찾음 -> 시작");
+               Init();
+            }
+         }
+         if (!ok)
+            return;
+      }
       datetime now = TimeCurrent();
       CheckClosed();
       int at = A_ExitAt(DayStart(now));

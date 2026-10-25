@@ -20,6 +20,7 @@ public:
    string   sym, tag, st;
    int      magic;
    bool     ok;
+   datetime okTry;
    int      ticket;
    datetime lastBar;
    double   openLot, openPx;
@@ -39,6 +40,7 @@ public:
       ticket = -1;
       lastBar = 0;
       shSide = 0;
+      okTry = TimeLocal();
       ok = UseSymbol(sym);
       if (!ok)
          Print("[", tag, "] 종목 ", sym, "을 찾을 수 없어 이 전략은 쉽니다");
@@ -249,7 +251,20 @@ public:
    void Timer(bool on)
    {
       if (!ok)
-         return;
+      {
+         if (TimeLocal() - okTry >= 60)          // 처음에 못 찾은 종목: 1분마다 다시 (주말·시세 받기 전)
+         {
+            okTry = TimeLocal();
+            ok = UseSymbol(sym);
+            if (ok)
+            {
+               Print("[", tag, "] 종목 ", sym, " 찾음 -> 시작");
+               Init();
+            }
+         }
+         if (!ok)
+            return;
+      }
       CheckClosed();
       if (shSide != 0)
       {
