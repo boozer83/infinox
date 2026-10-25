@@ -377,6 +377,8 @@ string RiskBlock(string tag, string file, double stopPct)
    string halted = StGet(file, "halted", "");
    if (halted != "")
       return "계좌 손실 한도로 중단된 상태 (" + halted + "). 확인 후 MQL4\\Files\\" + file + "에서 halted 줄을 지우면 다시 시작";
+   if (AccountBalance() <= 0 || AccountEquity() <= 0)        // 계좌 정보를 아직 못 받은 순간 (0으로 읽힘): 판단 안 함
+      return "";
    double old = StringToDouble(StGet(file, "peak", "0"));
    double peak = MathMax(old, AccountBalance());
    if (peak != old)
