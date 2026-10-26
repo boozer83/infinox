@@ -280,14 +280,17 @@ def enter(st, side, sl_of, signal, planned):
            "deviation": DEVIATION, "magic": bot.magic, "comment": f"IDX {VERSION}", "type_time": mt5.ORDER_TIME_GTC,
            "type_filling": bot.filling_mode(info)}
     sent = bot.clock.now()
+    real_ms = int(time.time() * 1000)              # MT4 통로 시각 (실제 UTC. sent_ms는 서버시간을 UTC처럼 쓴 값이라 다름)
     st["done"] = "주문 보냄"                       # 응답 전에 죽어도 다시 안 보냄
-    st["pending"] = {"sent_ms": int(utc(sent).timestamp() * 1000), "order": 0, "comment": ""}   # 재시작 뒤 체결 이력으로 복원
+    st["pending"] = {"sent_ms": int(utc(sent).timestamp() * 1000), "real_ms": real_ms, "order": 0, "comment": ""}   # 재시작 뒤 체결 이력으로 복원
     st.update(req_price=price, req_lot=lot, sl=sl, side=side, signal=signal, bid=t.bid, ask=t.ask,
               planned_entry=f"{planned:%H:%M:%S.%f}"[:-3], planned_ms=int(utc(planned).timestamp() * 1000),
               target_risk=round(target, 2), plan_risk=round(risk, 2), risk=round(risk, 2))
     save_state(bot.state_path, st)
     res = mt5.order_send(req)
     got = bot.clock.now()
+    if res is not None and res.retcode == mt5.TRADE_RETCODE_DONE:   # MT4 따라하기: 체결 확인 뒤, 손절은 절대 가격 (Trader.open을 안 거쳐서 직접)
+        bot.bridge("open", side, sl_abs=sl, lot=res.volume or lot, ref=res.order, ts_ms=real_ms)
     time.sleep(0.5)
     pos = my_positions()
     st.update(side=side, signal=signal, planned_entry=f"{planned:%H:%M:%S.%f}"[:-3], send_time=f"{sent:%H:%M:%S.%f}"[:-3],
@@ -381,6 +384,8 @@ def resolve_pending(st):
         adopt_deals(st, allin)
         st.pop("pending")
         st["done"] = "진입"
+        if pd_.get("real_ms") and st.get("positions"):    # 응답이 불명이었던 주문: 체결 확인됐으니 MT4에도 (주문 시각 기준, 5초 넘었으면 MT4가 안 받음)
+            bot.bridge("open", st["side"], sl_abs=st.get("sl") or 0.0, lot=st["lot"], ref=st["positions"][0], ts_ms=pd_["real_ms"])
         if short:
             st["want_lot"] = want if want is not None else st.get("req_lot")   # finish가 이만큼 모일 때까지 조금 더 기다림
             bot.log.warning(f"체결 이력 일부만 확인 ({vin}/{want if want is not None else '주문 이력 없음'} lot), 청산 기록 때 다시 대조")
@@ -512,6 +517,7 @@ def main():
     TICKER[sym] = live_symbol(sym) if args.live else sym
     log_dir = Path(__file__).resolve().parent / "logs" / f"index_{sym.lower()}{'_live' if args.live else ''}_log"
     bot = Trader(NAMES[sym], broker(sym), MAGICS[sym], DEVIATION, log_dir, f"idx_{sym}", live=args.live)
+    bot.bridge_id = {"NAS100": "NAS", "GER40": "GER"}[sym]   # MT4 따라하기 이름
     acc = bot.start(dry_run=args.dry)
     bot.clock = ServerClock(CLOCK_SYMBOL)          # 지수 틱은 장 밖에서 멈추거나 비어 있어서 서버 시계는 금 틱으로
     mt5.symbol_select(CLOCK_SYMBOL, True)

@@ -187,6 +187,10 @@ public:
    virtual string StartText() { return ""; }
    virtual int    Magic() { return 0; }
    virtual string Sym() { return Symbol(); }
+   // 파이썬 따라하기 (mod_follow.mqh): 통로의 전략 이름, 신호 처리 (따라하기가 아닌 전략은 "" / 아무것도 안 함)
+   virtual string BridgeId() { return ""; }
+   // 반환: 이 줄을 다 처리했으면 true (false면 통로 읽기를 거기서 멈추고 다음에 같은 줄부터 다시)
+   virtual bool   OnBridge(bool on, string action, int side, double slD, double tpD, double slAbs, double lot1000, long sigMs, string ref) { return true; }
 };
 
 //---------------------------------------------------------------- 봉 / 지표

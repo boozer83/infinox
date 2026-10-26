@@ -1,29 +1,22 @@
 // Infinox 봇을 한 EA로 돌리는 MT4판. XAUUSD 차트 하나(아무 시간봉)에 붙임
-// 전략 (파이썬 봇과 같은 규칙, 뉴스 양방향만 빼고 전부):
+// 전략 판단은 파이썬 데모 봇 한 곳에서만 하고, MT4는 공용 통로(Common\Files\infinox_bridge.csv)로 받은 진입·청산 신호를 따라 함
+// (2026-10-26 사용자 결정: MT4·MT5 서버 봉 가격 차이로 신호가 갈리지 않게, 전략 로직을 MT4에 다시 짜지 않게. mod_follow.mqh)
 //   0 SAR 단타 / 1 H4 추세 금 / 2 아시아 3마틴 금 / 3 아시아 3마틴 XAUEUR / 4 단타 2마틴 / 5 H4 추세 이더리움 /
-//   6 헤지 마틴 / 7 나스닥 첫30분 / 8 독일 ORB 매도 / 9 서프라이즈
-//   새로 넣은 4~9는 처음엔 꺼진 채 (패널에서 체크해야 켜짐)
+//   6 헤지 마틴 / 7 나스닥 첫30분 / 8 독일 ORB 매도 / 9 서프라이즈 (서프라이즈는 원래부터 파이썬 신호 파일을 따로 읽음, mod_surprise.mqh)
+// 파이썬 데모 봇이 꺼져 있으면 신규 진입이 없음. 열린 포지션은 MT4 서버 SL/TP와 파이썬 청산 신호로 관리
 // 차트 패널:
 // - 전략 체크박스와 전략별 오늘 / 이번주 / 이번달 수익률
 // - 시작 버튼: 선택한 전략만 켬. 정지 버튼: 전부 끔. 켜져 있는 동안 선택을 바꾸면 바로 반영
-// - 끄면 신규 진입만 멈춤. 이미 열린 포지션은 서버 SL/TP와 청산 규칙(금요일·23:00·추세 종료·마감·사이클 목표)으로 계속 관리
+// - 끄면 신규 진입만 멈춤. 이미 열린 포지션은 서버 SL/TP와 파이썬 청산 신호로 계속 관리
 // 선택 / 시작 상태는 MQL4\Files\infinox_panel.txt에 저장 -> MT4를 껐다 켜도 그대로
-// 새 전략 추가: mod_*.mqh에 CStrat를 이은 클래스를 만들고 아래 OnInit의 Add(...)에 한 줄 (패널·알림·타이머·리포트가 같이 붙음)
+// 새 전략 추가: 파이썬 봇에 bot.bridge_id = "이름" 한 줄 + 아래 OnInit에 CFollow 하나 (Setup + Add)
 // 다른 종목(XAUEUR, ETHUSD, NAS100, GER40)은 입력값의 종목명을 씀 (빈칸이면 XAUEUR + 차트 종목 접미사). MT4 시장 감시에 있어야 함
-// 서프라이즈·헤지 마틴의 뉴스 거르기는 파이썬 데모 서프라이즈 봇이 Common\Files에 써 주는 파일을 읽음 (mod_surprise.mqh, mod_hedge.mqh)
 // 리포트: 한국시간 평일 21:00에 계좌 리포트 (mod_report.mqh, report_bot.py와 같음)
 #property strict
-#property description "Infinox 봇 10개 (SAR 단타·2마틴 / H4 추세 금·이더리움 / 아시아 3마틴 금·XAUEUR / 헤지 마틴 / 나스닥·독일 / 서프라이즈) + 켜고 끄는 패널"
+#property description "Infinox 봇 10개를 파이썬 신호로 따라 함 (SAR 단타·2마틴 / H4 추세 금·이더리움 / 아시아 3마틴 금·XAUEUR / 헤지 마틴 / 나스닥·독일 / 서프라이즈) + 켜고 끄는 패널"
 
 input bool   AllowLive = true;       // 실계좌에서도 실행
-input double LotPer1000 = 0.05;      // SAR 단타·2마틴: 그날 시작 잔고 1,000$당 시작 lot
-input double MartinMaxLot = 1.0;     // SAR 단타·2마틴: 넘으면 이 lot으로 깎아서 진입
-input double TrendRiskPct = 2.0;     // H4 추세: 거래당 위험 (잔고 %)
-input double TrendMaxLot = 5.0;      // H4 추세: 최대 lot
-input double AsiaRiskPct = 0.6;      // 아시아 3마틴 금: 1단계 위험 (잔고 %, XAUEUR와 같이 돌려서 1% -> 0.6%)
-input double AsiaEurRiskPct = 0.6;   // 아시아 3마틴 XAUEUR: 1단계 위험 (잔고 %)
-input double AsiaMaxLot = 1.0;       // 아시아 3마틴: 진입 lot이 이보다 크면 진입 안 함
-input double HedgeLotPer1000 = 0.01; // 헤지 마틴: 사이클 시작 잔고 1,000$당 시작 lot
+input double FollowMaxLot = 1.0;     // 따라하기: 진입 lot 최대 (파이썬 비율로 계산한 lot이 넘으면 이 lot)
 input double SurpriseLotPer1000 = 0.01; // 서프라이즈: 잔고 1,000$당 lot
 input string AsiaEurSymbol = "";     // XAUEUR 종목명 (빈칸이면 XAUEUR + 차트 종목 접미사)
 input string EthSymbol = "ETHUSD";   // 이더리움 종목명
@@ -41,11 +34,7 @@ input int    MagicGer = 20261026;
 input int    MagicSurprise = 20261027;
 
 #include "infinox_common.mqh"
-#include "mod_martin.mqh"
-#include "mod_trend.mqh"
-#include "mod_asia.mqh"
-#include "mod_hedge.mqh"
-#include "mod_index.mqh"
+#include "mod_follow.mqh"
 #include "mod_surprise.mqh"
 
 #define PANEL_FILE "infinox_panel.txt"
@@ -53,11 +42,7 @@ input int    MagicSurprise = 20261027;
 #define FONT "Malgun Gothic"
 #define MAX_STRAT 16
 
-CSar      g_sar, g_sarMartin;
-CTrend    g_trend, g_trendEth;
-CAsia     g_asia, g_asiaEur;
-CHedge    g_hedge;
-CIndex    g_nas, g_ger;
+CFollow   g_sar, g_trend, g_asia, g_asiaEur, g_sarMartin, g_trendEth, g_hedge, g_nas, g_ger;
 CSurprise g_surprise;
 
 CStrat  *g_s[MAX_STRAT];
@@ -80,6 +65,7 @@ string StratName(int i) { return g_s[i].name; }
 bool   IsOn(int i) { return g_master && g_sel[i]; }
 
 #include "mod_report.mqh"
+#include "mod_bridge.mqh"
 
 void SavePanel()
 {
@@ -214,8 +200,8 @@ void DrawPanel()
 void DeletePanel() { ObjectsDeleteAll(0, PFX); }
 
 // 켤 때와 1분마다: 이 EA 포지션 중 서버 SL/TP가 빠진 것 (진입 직후 꺼졌거나 복구 목록 저장이 실패해서 목록에도 없는 것) 찾기.
-// 주문 중 기록("m<매직>" 거리)이 있으면 그 거리로, 규칙이 고정 거리인 전략(SAR 단타·2마틴 7.5/3, 헤지 TP 5, 서프라이즈 SL 30)은
-// 그 거리로 진입가 기준 다시 검. 둘 다 없으면(H4·아시아·지수) 티켓마다 한 번 알림
+// 주문 중 기록("m<매직>" 거리)이 있으면 그 거리로, 서프라이즈는 SL 30으로 진입가 기준 다시 검. 둘 다 없으면 티켓마다 한 번 알림
+// (따라하기 포지션은 손절·익절이 신호마다 달라서 주문 중 기록이 없으면 알 수 없음. 손절 없는 전략(헤지)의 SL 빠짐은 정상)
 int g_rcWarned[32];
 int g_rcN = 0;
 
@@ -236,28 +222,14 @@ void ReconcileStops()
          continue;                                  // 이미 지키기 목록에 있음
       string pend = StGet(PROTECT_FILE, "m" + IntegerToString(mg), "");
       double op = OrderOpenPrice(), slD = 0, tpD = 0;
-      bool needSl = true, needTp = false, fixed = false;
-      if (mg == MagicMartin || mg == MagicSarMartin)
-      {
-         slD = M_SL_USD;
-         tpD = M_TP_USD;
-         needTp = true;
-         fixed = true;
-      }
-      else if (mg == MagicHedge)
-      {
-         tpD = H_TP_USD;
-         needSl = false;
-         needTp = true;
-         fixed = true;
-      }
-      else if (mg == MagicSurprise)
+      // 전략마다 원래 거는 것: SAR·2마틴·아시아 = SL+TP, H4·지수·서프라이즈 = SL, 헤지 = TP
+      bool needSl = mg != MagicHedge, needTp = mg == MagicMartin || mg == MagicSarMartin || mg == MagicAsia || mg == MagicAsiaEur
+                                             || mg == MagicHedge, fixed = false;
+      if (mg == MagicSurprise)
       {
          slD = S_SAFETY_SL;
          fixed = true;
       }
-      else if (mg == MagicAsia || mg == MagicAsiaEur)
-         needTp = true;
       bool missSl = needSl && OrderStopLoss() <= 0, missTp = needTp && OrderTakeProfit() <= 0;
       if (!missSl && !missTp)
          continue;
@@ -315,15 +287,16 @@ int OnInit()
    string eur = AsiaEurSymbol != "" ? AsiaEurSymbol : "XAUEUR" + sfx;
    // 순서 = 패널 줄 번호 = 패널 파일의 sel 번호 (앞 4개는 예전 EA와 같은 번호라 선택 상태가 이어짐)
    N_STRAT = 0;
-   g_sar.Setup("SAR 단타", "infinox_martin_state.txt", MagicMartin, false, true);
-   g_trend.Setup(Symbol(), "H4 추세", "infinox_trend_state.txt", MagicTrend, true);
-   g_asia.Setup(Symbol(), "아시아 3마틴", "infinox_asia_state.txt", MagicAsia, AsiaRiskPct, true);
-   g_asiaEur.Setup(eur, "아시아 3마틴·XAUEUR", "infinox_asia_xaueur_state.txt", MagicAsiaEur, AsiaEurRiskPct, false);
-   g_sarMartin.Setup("단타 2마틴", "infinox_sar_martin_state.txt", MagicSarMartin, true, false);
-   g_trendEth.Setup(EthSymbol, "H4 추세·ETH", "infinox_trend_eth_state.txt", MagicTrendEth, false);
-   g_hedge.Setup("헤지 마틴", "infinox_hedge_state.txt", MagicHedge, false);
-   g_nas.Setup(NasSymbol, "NAS100", "나스닥 첫30분", "infinox_index_nas_state.txt", MagicNas, false);
-   g_ger.Setup(GerSymbol, "GER40", "독일 ORB 매도", "infinox_index_ger_state.txt", MagicGer, false);
+   // Setup(종목, 패널 이름, 상태 파일, 매직, 파이썬 bridge_id, 허용 미끄러짐(가격), 처음 켤 때 선택)
+   g_sar.Setup(Symbol(), "SAR 단타", "infinox_martin_state.txt", MagicMartin, "SAR", 0.3, true);
+   g_trend.Setup(Symbol(), "H4 추세", "infinox_trend_state.txt", MagicTrend, "TREND", 0.5, true);
+   g_asia.Setup(Symbol(), "아시아 3마틴", "infinox_asia_state.txt", MagicAsia, "ASIA", 0.5, true);
+   g_asiaEur.Setup(eur, "아시아 3마틴·XAUEUR", "infinox_asia_xaueur_state.txt", MagicAsiaEur, "ASIA_EUR", 0.5, false);
+   g_sarMartin.Setup(Symbol(), "단타 2마틴", "infinox_sar_martin_state.txt", MagicSarMartin, "SARM", 0.3, false);
+   g_trendEth.Setup(EthSymbol, "H4 추세·ETH", "infinox_trend_eth_state.txt", MagicTrendEth, "TREND_ETH", 5.0, false);
+   g_hedge.Setup(Symbol(), "헤지 마틴", "infinox_hedge_state.txt", MagicHedge, "HEDGE", 0.3, false);
+   g_nas.Setup(NasSymbol, "나스닥 첫30분", "infinox_index_nas_state.txt", MagicNas, "NAS", 3.0, false);
+   g_ger.Setup(GerSymbol, "독일 ORB 매도", "infinox_index_ger_state.txt", MagicGer, "GER", 3.0, false);
    g_surprise.Setup("서프라이즈", "infinox_surprise_state.txt", MagicSurprise, false);
    Add(GetPointer(g_sar));
    Add(GetPointer(g_trend));
@@ -369,6 +342,7 @@ void OnTimer()
    if (!AccountOk())
       return;
    TickWatch();
+   BridgeRead();
    for (int i = 0; i < N_STRAT; i++)
       g_s[i].Fast(IsOn(i));
    if (GetTickCount() - g_lastSec < 1000)

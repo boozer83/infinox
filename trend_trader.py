@@ -216,6 +216,7 @@ def main():
     if args.symbol:
         use_symbol(args.symbol, args.live)
     bot = Trader(STRATEGY, SYMBOL, MAGIC, DEVIATION, LOG_DIR, "trend", live=args.live)
+    bot.bridge_id = {"XETUSD": "TREND_ETH"}.get(args.symbol or "", "TREND")   # MT4 따라하기 이름
     acc = bot.start(args.dry_run)
     CONTRACT = mt5.symbol_info(SYMBOL).trade_contract_size   # 금 100, 이더리움 1
     kind = bot.kind

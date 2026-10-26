@@ -26,6 +26,7 @@ TP_OZ = dt.TP_USD
 CHAIN = 0.0             # 이번 묶음 누적 손익 $ (martin_state가 계산)
 
 dt.MAGIC = 20261022
+dt.BRIDGE_ID = "SARM"
 dt.MARTIN = True
 dt.MARTIN_MAX_LEVEL = MAX_STEP
 dt.LOG_DIR = dt.LOG_DIR.parent / "sar_martin_log"

@@ -279,6 +279,7 @@ def main():
     if args.symbol:
         use_symbol(args.symbol, args.live)
     bot = Trader(STRATEGY, SYMBOL, MAGIC, DEVIATION, LOG_DIR, "asia", live=args.live)
+    bot.bridge_id = {"XAUEUR": "ASIA_EUR"}.get((args.symbol or "").rstrip("#"), "ASIA")   # MT4 따라하기 이름
     acc = bot.start(args.dry_run)
     if args.symbol:
         # 계좌 통화(달러)로 1 lot이 가격 1 움직일 때 손익 (XAUEUR은 유로 손익을 달러로 바꿔서)

@@ -131,6 +131,7 @@ def main():
     if args.live:
         use_live_paths()
     bot = Trader(STRATEGY, SYMBOL, MAGIC, dt.DEVIATION, LOG_DIR, "hedge", live=args.live)
+    bot.bridge_id = "HEDGE"        # MT4 따라하기 이름
     acc = bot.start()
     st = load_json(STATE_JSON)
     desc = (f"SAR 단타 신호에 매수·매도 동시 진입, 각자 익절 {TP_USD:g}$ / 손절 없음, SAR 전환마다 2배 추가 (최대 {MAX_LEVEL}단계), "

@@ -4,6 +4,7 @@
 --live / --symbol 처리가 끝난 뒤 그 값으로 Trader를 만든다.
 
   bot = Trader("SAR 단타", SYMBOL, MAGIC, DEVIATION, LOG_DIR, "demo", live=args.live)
+  bot.bridge_id = "SAR"        # MT4 따라하기 이름 (common/signal_bridge.py). 데모 실행만 진입·청산 신호를 보냄
   bot.start()                  # 로그 설정 + MT5 연결 + 계좌 확인 + 텔레그램 + 서버 시계
   with bot.running("종료 메시지"):
       while True:
@@ -21,6 +22,7 @@ from datetime import datetime, timezone
 import MetaTrader5 as mt5
 import pandas as pd
 
+from common import signal_bridge
 from config import mt5_init
 from reports import ServerClock, summary_line
 from telegram_notify import Notifier
@@ -97,6 +99,8 @@ class Trader:
         self.tg = None
         self.clock = None
         self.acc = None
+        self.bridge_id = None          # MT4 따라하기 전략 이름 (None이면 안 보냄)
+        self.dry_run = False
 
     # ---- 시작 / 연결
     def setup_logging(self):
@@ -138,6 +142,7 @@ class Trader:
         self.connect()
         self.acc = self.check_account()
         self.tg = Notifier()
+        self.dry_run = dry_run
         if dry_run:
             self.tg.enabled = False
         self.clock = ServerClock(self.symbol)
@@ -157,6 +162,8 @@ class Trader:
             self.connect()
         self.check_account(self.acc.login)
         self.clock.update()
+        if self.bridge_id and not self.live and not self.dry_run:
+            signal_bridge.flush()                     # MT4 통로: 쓰기 실패해 밀린 줄 다시
         return self.clock.now()
 
     def warn_algo_off(self):
@@ -219,8 +226,21 @@ class Trader:
             return mt5.ORDER_FILLING_IOC
         return mt5.ORDER_FILLING_RETURN
 
+    # ---- MT4 따라하기 통로 (데모 실행만. 진입은 데모 체결 확인 뒤, 청산은 청산 주문 직전. 서버 SL/TP로 닫히는 건 각자)
+    def bridge(self, action, side, sl=0.0, tp=0.0, sl_abs=0.0, lot=0.0, ref=0, ts_ms=None):
+        """ref = 데모 포지션(주문) 티켓: 청산 신호는 티켓마다 한 번만 (재시도마다 쌓이지 않게)"""
+        if not self.bridge_id or self.live or self.dry_run:
+            return
+        lot1000 = 0.0
+        if action == "open" and lot:
+            acc = mt5.account_info()
+            lot1000 = lot / acc.balance * 1000 if acc and acc.balance > 0 else 0.0
+        signal_bridge.send(self.bridge_id, action, side, sl or 0.0, tp or 0.0, sl_abs or 0.0, lot1000, ref, ts_ms)
+
     def deal(self, side, lot, comment, position=None, sl_dist=None, tp_dist=None, deviation=None):
-        """시장가 주문 하나 (position을 주면 그 포지션 청산). sl/tp는 주문 가격에서의 거리($)"""
+        """시장가 주문 하나 (position을 주면 그 포지션 청산 -> MT4에도 그 방향 청산 신호). sl/tp는 주문 가격에서의 거리($)"""
+        if position:
+            self.bridge("close", -side, ref=position)
         info, tick = mt5.symbol_info(self.symbol), mt5.symbol_info_tick(self.symbol)
         if info is None or tick is None:              # 시세 조회 실패: 주문 안 보내고 실패로 (부른 쪽이 다시 시도)
             return Fill(False, f"시세 없음 {mt5.last_error()}", None, 0.0, None, 0.0, 0.0)
@@ -255,14 +275,17 @@ class Trader:
         return True
 
     def open(self, side, lot, comment, sl_dist=None, tp_dist=None):
-        """증거금 확인 후 시장가 진입. 실패하면 알리고 None"""
+        """증거금 확인 후 시장가 진입. 실패하면 알리고 None. 데모 체결이 확인되면 MT4에 진입 신호
+        (데모가 못 들어간 포지션을 MT4만 들고 있으면 파이썬 청산 신호가 안 나가서)"""
         if not self.margin_ok(side, lot):
             return None
+        sent_ms = int(time.time() * 1000)              # MT4 통로 시각 = 주문 보낸 때 (응답이 늦었으면 MT4가 늦은 신호로 거름)
         f = self.deal(side, lot, comment, sl_dist=sl_dist, tp_dist=tp_dist)
         if not f.ok:
             self.log.error(f"주문 실패: {f.err}")
             self.send(f"❗ 주문 실패 ({side_name(side)} {lot} lot): {f.err}")
             return None
+        self.bridge("open", side, sl_dist, tp_dist, 0.0, lot, ref=f.res.order, ts_ms=sent_ms)
         return f
 
     def close(self, p, comment, what):

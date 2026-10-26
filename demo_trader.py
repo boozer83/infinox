@@ -128,6 +128,7 @@ DAILY_LOSS_PCT = None     # 하루 손실 한도 (그날 시작 잔고 대비 %)
 ACCOUNT_STOP_PCT = 50.0   # 계좌 손실 한도 (최고 잔고 대비 평가금 감소 %). 30%는 2025-08 낙폭(34%)에 걸려 멈췄음
 # 주문
 MAGIC = 20261017
+BRIDGE_ID = "SAR"          # MT4 따라하기 이름 (데모 실행만 진입·청산 신호를 보냄, common/signal_bridge.py)
 DEVIATION = 30            # 허용 슬리피지 (포인트, 0.30달러)
 POLL_SEC = 1.0
 ENTRY_LATE_SEC = 60       # 신호 봉 마감보다 이만큼 늦으면 진입 안 함 (재시작·멈춤 뒤 지난 신호로 들어가지 않게)
@@ -548,6 +549,7 @@ def main():
     if args.live:
         use_live_paths()
     bot = Trader(STRATEGY, SYMBOL, MAGIC, DEVIATION, LOG_DIR, "demo", live=args.live)
+    bot.bridge_id = BRIDGE_ID
     acc = bot.start(args.dry_run)
     kind = bot.kind
     base = base_lot(bot.clock.now())
