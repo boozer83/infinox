@@ -235,6 +235,7 @@ class Trader:
         if action == "open" and lot:
             acc = mt5.account_info()
             lot1000 = lot / acc.balance * 1000 if acc and acc.balance > 0 else 0.0
+        signal_bridge.log = self.log
         signal_bridge.send(self.bridge_id, action, side, sl or 0.0, tp or 0.0, sl_abs or 0.0, lot1000, ref, ts_ms)
 
     def deal(self, side, lot, comment, position=None, sl_dist=None, tp_dist=None, deviation=None):
