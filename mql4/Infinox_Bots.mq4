@@ -66,6 +66,7 @@ bool     g_sel[MAX_STRAT];
 bool     g_master = false;
 datetime g_lastPanel = 0;
 uint     g_lastSec = 0;
+datetime g_lastReconcile = 0;
 
 void Add(CStrat *s)
 {
@@ -154,7 +155,7 @@ double PeriodPct(datetime start, int magic, string sym, double &pnl)
       if (OrderSelect(i, SELECT_BY_POS, MODE_HISTORY) && OrderType() <= OP_SELL && OrderMagicNumber() == magic
           && OrderSymbol() == sym && OrderCloseTime() >= start)
          pnl += OrderProfit() + OrderSwap() + OrderCommission();
-   double b0 = BalanceAt(start);
+   double b0 = BalanceAt(start) + Deposits(start, TimeCurrent() + 86400);
    return b0 > 0 ? pnl / b0 * 100 : 0;
 }
 
@@ -212,6 +213,92 @@ void DrawPanel()
 
 void DeletePanel() { ObjectsDeleteAll(0, PFX); }
 
+// 켤 때와 1분마다: 이 EA 포지션 중 서버 SL/TP가 빠진 것 (진입 직후 꺼졌거나 복구 목록 저장이 실패해서 목록에도 없는 것) 찾기.
+// 주문 중 기록("m<매직>" 거리)이 있으면 그 거리로, 규칙이 고정 거리인 전략(SAR 단타·2마틴 7.5/3, 헤지 TP 5, 서프라이즈 SL 30)은
+// 그 거리로 진입가 기준 다시 검. 둘 다 없으면(H4·아시아·지수) 티켓마다 한 번 알림
+int g_rcWarned[32];
+int g_rcN = 0;
+
+void ReconcileStops()
+{
+   for (int i = OrdersTotal() - 1; i >= 0; i--)
+   {
+      if (!OrderSelect(i, SELECT_BY_POS, MODE_TRADES) || OrderType() > OP_SELL)
+         continue;
+      int k = -1;
+      for (int j = 0; j < N_STRAT && k < 0; j++)
+         if (OrderMagicNumber() == StratMagic(j) && OrderSymbol() == StratSymbol(j))
+            k = j;
+      if (k < 0)
+         continue;
+      int tk = OrderTicket(), mg = OrderMagicNumber(), side = OrderType() == OP_BUY ? 1 : -1;
+      if (StGet(PROTECT_FILE, IntegerToString(tk), "") != "")
+         continue;                                  // 이미 지키기 목록에 있음
+      string pend = StGet(PROTECT_FILE, "m" + IntegerToString(mg), "");
+      double op = OrderOpenPrice(), slD = 0, tpD = 0;
+      bool needSl = true, needTp = false, fixed = false;
+      if (mg == MagicMartin || mg == MagicSarMartin)
+      {
+         slD = M_SL_USD;
+         tpD = M_TP_USD;
+         needTp = true;
+         fixed = true;
+      }
+      else if (mg == MagicHedge)
+      {
+         tpD = H_TP_USD;
+         needSl = false;
+         needTp = true;
+         fixed = true;
+      }
+      else if (mg == MagicSurprise)
+      {
+         slD = S_SAFETY_SL;
+         fixed = true;
+      }
+      else if (mg == MagicAsia || mg == MagicAsiaEur)
+         needTp = true;
+      bool missSl = needSl && OrderStopLoss() <= 0, missTp = needTp && OrderTakeProfit() <= 0;
+      if (!missSl && !missTp)
+         continue;
+      string pf[];
+      double slAbs = 0;
+      if (StringSplit(pend, '|', pf) >= 2 && (StringToDouble(pf[0]) > 0 || StringToDouble(pf[1]) > 0))
+      {
+         if (ArraySize(pf) >= 4 && pf[3] == "1")
+         {
+            slAbs = StringToDouble(pf[0]);          // 지수: 손절 절대 가격
+            slD = 0;
+         }
+         else
+            slD = StringToDouble(pf[0]);
+         tpD = StringToDouble(pf[1]);
+         fixed = true;
+      }
+      if (fixed)
+      {
+         int dg = (int)MarketInfo(OrderSymbol(), MODE_DIGITS);
+         double sl = OrderStopLoss() > 0 ? OrderStopLoss() : slAbs > 0 ? NormalizeDouble(slAbs, dg) : slD > 0 ? NormalizeDouble(op - side * slD, dg) : 0;
+         double tp = OrderTakeProfit() > 0 ? OrderTakeProfit() : tpD > 0 ? NormalizeDouble(op + side * tpD, dg) : 0;
+         Print("[", StratName(k), "] 켤 때 SL/TP 빠진 포지션 ", tk, " -> 다시 걸기");
+         if (Protect(StratName(k), tk, sl, tp) && pend != "")
+            StSet(PROTECT_FILE, "m" + IntegerToString(mg), "");   // 이 기록으로 복구 끝 (또는 티켓 목록으로 넘어감)
+      }
+      else
+      {
+         bool warned = false;
+         for (int w = 0; w < MathMin(g_rcN, 32) && !warned; w++)
+            warned = g_rcWarned[w] == tk;
+         if (warned)
+            continue;
+         g_rcWarned[g_rcN % 32] = tk;
+         g_rcN++;
+         Send(StratName(k), StringFormat("⚠️ 포지션 %d에 서버 %s이(가) 없어요 (EA가 진입 직후 꺼졌을 수 있음). MT4에서 직접 확인해 주세요",
+                                        tk, missSl && missTp ? "손절·익절" : missSl ? "손절" : "익절"));
+      }
+   }
+}
+
 //---------------------------------------------------------------- MT4 이벤트
 int OnInit()
 {
@@ -251,6 +338,7 @@ int OnInit()
    LoadPanel();
    for (int i = 0; i < N_STRAT; i++)
       g_s[i].Init();
+   ReconcileStops();
    R_Init();
    if (g_master)
    {
@@ -280,11 +368,18 @@ void OnTimer()
 {
    if (!AccountOk())
       return;
+   TickWatch();
    for (int i = 0; i < N_STRAT; i++)
       g_s[i].Fast(IsOn(i));
    if (GetTickCount() - g_lastSec < 1000)
       return;
    g_lastSec = GetTickCount();
+   ProtectTick();
+   if (TimeLocal() - g_lastReconcile >= 60)
+   {
+      g_lastReconcile = TimeLocal();
+      ReconcileStops();
+   }
    for (int i = 0; i < N_STRAT; i++)
       g_s[i].Timer(IsOn(i));
    R_Timer();

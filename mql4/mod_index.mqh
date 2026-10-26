@@ -217,19 +217,9 @@ public:
       if (!MarginOkSym(tag, sym, lot))
          return;
       double fill;
-      int tk = OpenMarketSym(tag, sym, side, lot, 0, 0, magic, "IDX " + kind, X_SLIP_PTS, fill);
+      int tk = OpenMarketSym(tag, sym, side, lot, 0, 0, magic, "IDX " + kind, X_SLIP_PTS, fill, sl);   // 손절은 절대 가격
       if (tk < 0)
          return;
-      int digits = (int)MarketInfo(sym, MODE_DIGITS);
-      bool slOk = false;
-      for (int i = 0; i < 5 && !slOk; i++)
-      {
-         slOk = OrderModify(tk, fill, NormalizeDouble(sl, digits), 0, 0, clrNONE);
-         if (!slOk)
-            Sleep(300);
-      }
-      if (!slOk)
-         Send(tag, StringFormat("❗ 손절 설정 실패 (티켓 %d, 오류 %d). MT4에서 직접 확인하세요.", tk, GetLastError()));
       Send(tag, StringFormat("%s %s %.2f lot @ %.2f (요청 %.2f, 스프레드 %.2f)\n%s\n손절 %.2f (위험 약 %.2f$), 마감 전 청산\n%s",
                              side > 0 ? "📈" : "📉", side > 0 ? "매수" : "매도", lot, fill, price, ask - bid, signal, sl,
                              MathAbs(fill - sl) * lot * PerLot(sym), AccountLine()));
@@ -244,7 +234,7 @@ public:
       string reason;
       if (!ClosedInfo(last, profit, px, reason))
          return;
-      string why = StGet(st, "closing", "");
+      string why = StGet(st, "closing_tk", "") == IntegerToString(last) ? StGet(st, "closing", "") : "";
       if (why != "")
          reason = why;
       Send(tag, StringFormat("%s 청산 (%s) @ %.2f: %+.2fpt, %+.2f$\n%s\n%s", profit > 0 ? "✅" : "❌", reason, px,
@@ -330,10 +320,13 @@ public:
             if (why == "" && mid > 0 && MarketInfo(sym, MODE_BID) >= mid)
                why = "SL";
          }
+         if (why == "" && StGet(st, "closing_tk", "") == IntegerToString(tk))
+            why = StGet(st, "closing", "");   // 한 번 청산하기로 했으면 가격이 돌아와도 닫힐 때까지 (index_trader와 같음)
          if (why != "" && TimeLocal() - lastTry >= 1)
          {
             lastTry = TimeLocal();
             StSet(st, "closing", why);
+            StSet(st, "closing_tk", IntegerToString(tk));
             CloseTicket(tag, tk, X_SLIP_PTS);
          }
          return;

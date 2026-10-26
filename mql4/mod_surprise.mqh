@@ -5,7 +5,7 @@
 // - lot = 잔고 1,000$당 SurpriseLotPer1000 (최소 0.01), 만일용 손절 S_SAFETY_SL$
 // - 청산 = 큰이익추적 5/2.5/15분: 발표 15분 안에 +5$면 최고점 -2.5$ 추적 (발표 30분 직전까지), 아니면 15분에 청산.
 //   추적이 켜지면 MT4 손절도 최고점 -2.5$로 올림 (EA가 멈춰도 지킴)
-// 상태: MQL4\Files\infinox_surprise_state.txt (읽은 줄 수, 포지션별 추적 상태)
+// 상태: MQL4\Files\infinox_surprise_state.txt (읽은 줄 수, 포지션별 추적 상태). 상태에 없는 이 전략 포지션은 켤 때와 1분마다 찾아서 청산
 
 #define S_FILE "infinox_surprise_signals.csv"
 #define S_MAX_AGE_MS 5000
@@ -31,6 +31,8 @@ public:
    string   why[S_MAX_OPEN];
    uint     lastTry[S_MAX_OPEN];
    bool     fileWarned;
+   bool     fullWarned;
+   uint     lastAdopt;
 
    void Setup(string panelName, string file, int mg, bool on)
    {
@@ -41,6 +43,8 @@ public:
       defOn = on;
       seen = 0;
       fileWarned = false;
+      fullWarned = false;
+      lastAdopt = 0;
       for (int i = 0; i < S_MAX_OPEN; i++)
          tk[i] = -1;
    }
@@ -235,11 +239,53 @@ public:
       }
    }
 
+   // 상태 파일에 없는 이 전략 포지션 (체결 직후 저장 전에 꺼진 경우): 추적 기준을 모르니 빈 칸에 넣고 바로 청산
+   // (news_surprise_paper.adopt_orphans와 같음). Manage가 닫힐 때까지 3초마다 다시 시도하고 알림
+   void AdoptOrphans()
+   {
+      for (int j = OrdersTotal() - 1; j >= 0; j--)
+      {
+         if (!OrderSelect(j, SELECT_BY_POS, MODE_TRADES) || OrderSymbol() != Symbol() || OrderMagicNumber() != magic
+             || OrderType() > OP_SELL)
+            continue;
+         int t = OrderTicket();
+         bool known = false;
+         for (int i = 0; i < S_MAX_OPEN && !known; i++)
+            known = tk[i] == t;
+         if (known)
+            continue;
+         int slot = -1;
+         for (int i = 0; i < S_MAX_OPEN && slot < 0; i++)
+            if (tk[i] < 0)
+               slot = i;
+         if (slot < 0)
+         {
+            if (!fullWarned)
+               Send(tag, StringFormat("⚠️ 상태에 없는 포지션 %d가 있는데 관리 칸이 꽉 찼어요. 칸이 비면 다시 확인합니다", t));
+            fullWarned = true;
+            continue;
+         }
+         tk[slot] = t;
+         side[slot] = OrderType() == OP_BUY ? 1 : -1;
+         e0[slot] = OrderOpenPrice();
+         rel[slot] = (long)TimeGMT();
+         armed[slot] = false;
+         peak[slot] = 0;
+         sl[slot] = OrderStopLoss();
+         why[slot] = "상태 없는 포지션 정리";
+         lastTry[slot] = 0;
+         Save(slot);
+         Print("[", tag, "] 상태에 없는 포지션 ", t, " -> 청산");
+         Send(tag, StringFormat("⚠️ 상태 파일에 없는 서프라이즈 포지션 %d (재시작 전 진입) -> 추적 기준을 몰라 청산합니다", t));
+      }
+   }
+
    //---- Infinox_Bots.mq4에서 부름
    void Init()
    {
       for (int i = 0; i < S_MAX_OPEN; i++)
          Load(i);
+      AdoptOrphans();
       // 처음 켤 때는 지금까지 쌓인 줄을 건너뜀 (지난 신호로 들어가지 않게)
       string v = StGet(st, "seen", "");
       if (v == "")
@@ -264,6 +310,11 @@ public:
    void Fast(bool on)
    {
       ReadSignals(on);
+      if (GetTickCount() - lastAdopt >= 60000)    // 상태에 없는 포지션은 1분마다 다시 확인 (켤 때 못 본 것, 칸이 꽉 찼던 것)
+      {
+         lastAdopt = GetTickCount();
+         AdoptOrphans();
+      }
       Manage();
    }
 };

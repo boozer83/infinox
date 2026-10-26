@@ -204,8 +204,10 @@ public:
          Print("[", tag, "] 그림자 포지션 중이라 신호 무시");
          return;
       }
-      double top, bot;
-      if (T_CLOUD_FILTER && Cloud(h, l, n, top, bot) && !(entry == 1 ? cl > top : cl < bot))
+      double top = 0, bot = 0;
+      bool cloudOk = Cloud(h, l, n, top, bot);
+      // 구름을 계산할 봉이 모자라면 진입 승인 안 함 (trend_trader: 구름 NaN이면 그림자)
+      if (T_CLOUD_FILTER && (!cloudOk || !(entry == 1 ? cl > top : cl < bot)))
       {
          RefreshRates();
          double px = entry == 1 ? Ask1() : Bid1();
@@ -213,7 +215,7 @@ public:
          shEntry = px;
          shSl = NormalizeDouble(px - entry * T_SL_ATR * atr, 2);
          SaveShadow();
-         string where = cl >= bot && cl <= top ? "구름 안" : "구름 반대편";
+         string where = !cloudOk ? "구름 계산 불가(봉 부족)" : cl >= bot && cl <= top ? "구름 안" : "구름 반대편";
          Print(StringFormat("[%s] 종가 %.2f가 %s (구름 %.2f~%.2f) -> 진입 안 함, 그림자 손절가 %.2f", tag, cl, where, bot, top, shSl));
          Send(tag, StringFormat("👻 %s 신호지만 종가 %.2f가 4시간봉 %s (구름 %.2f~%.2f)\n진입하지 않고, 추세가 끝나거나 손절가 %.2f에 닿을 때까지 다음 신호를 쉽니다",
                                 entry == 1 ? "매수" : "매도", cl, where, bot, top, shSl));

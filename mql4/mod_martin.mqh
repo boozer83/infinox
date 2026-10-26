@@ -7,9 +7,10 @@
 // - 오늘 완성 1시간봉 SAR 전환 3번 이상이면 진입 안 함
 // - 5분봉 ATR(14) 2.5$ 미만, 또는 최근 20일 5분봉 ATR 중앙값의 2배 초과면 진입 안 함
 // - 과열 거르기: 신호 봉 종가가 뚫은 SAR 값에서 ATR x 0.8 넘게 갔거나 새 SAR 점에서 ATR x 2.8 넘게 떨어져 있으면 진입 안 함
-// - 보유 중 5분봉 SAR이 반대로 전환되면(완성 봉) 시장가 청산 (반대 콩 청산, 2026-10-21 추가)
+// - 보유 중 5분봉 SAR이 반대로 전환되면(완성 봉) 시장가 청산 (반대 콩 청산, 2026-10-21 추가). 실패하면 다음 봉 전까지 5초마다 다시
+// - 신호 봉 마감 60초 뒤거나 틱이 30초 넘게 없으면 진입 안 함 (재시작·연결 끊김)
 // - 승률 쉬기(최근 200건 71.4% 미만이면 가상 진입만)는 꺼 둠 (M_WINRATE_PAUSE). 승률은 기록만
-// - 계좌 손실 한도 50% (최고 잔고 대비 평가금)
+// - 계좌 손실 한도 50% (최고 잔고 대비 평가금, 켜져 있으면 신호가 없어도 5초마다 감시)
 // lot: SAR 단타 = 그날 시작 잔고 1,000$당 LotPer1000 고정
 //      2마틴 (sar_martin_trader.py) = 지면 다음 lot은 이번 묶음 누적 손실을 익절 3$로 딱 되찾는 크기 (2마틴까지, 시작 lot의 5배·MartinMaxLot까지),
 //      묶음 합계가 0 이상이면 시작 lot으로, 오늘 2연속 손절이면 그날 쉼, 서버 날짜가 바뀌면 초기화
@@ -153,6 +154,9 @@ public:
    bool     martin;
    int      ticket;
    datetime lastBar, lastCloseTry, riskNotified;
+   datetime lastRisk, lastExitTry;
+   int      sarDir;                  // 최신 완성 5분봉 SAR 방향 (SarExit가 계산, 계산 못 했으면 0)
+   datetime sarBar;                  // sarDir를 계산한 봉
    bool     fridayClose, sarClose;
    string   wr;                      // 최근 결과 '1'(익절) / '0'(손절)
    int      vside;                   // 가상 포지션 방향
@@ -173,6 +177,10 @@ public:
       lastBar = 0;
       lastCloseTry = 0;
       riskNotified = 0;
+      lastRisk = 0;
+      lastExitTry = 0;
+      sarDir = 0;
+      sarBar = 0;
       chain = 0;
    }
 
@@ -386,6 +394,10 @@ public:
          why = "가상 포지션 진행 중이라 신호 무시";
       else if (stopped)
          why = StringFormat("오늘 %d연속 손절로 쉬는 중이라 신호 무시", M_STOP_STREAK);
+      else if (now - (bar + 300) > ENTRY_LATE_SEC)
+         why = StringFormat("신호 봉 마감 %d초 뒤라 (재시작·멈춤) 진입 안 함", (int)(now - (bar + 300)));
+      else if (!TickFresh())
+         why = StringFormat("시세 멈춤 / 연결 끊김 (틱 %d초 넘게 없음)이라 진입 안 함", TICK_FRESH_SEC);
       if (why != "")
       {
          Print("[", tag, "] ", why);
@@ -416,9 +428,11 @@ public:
       Place(side, level, LotFor(level, BaseLot()), bar, iClose(NULL, PERIOD_M5, 1));
    }
 
-   // 반대 콩 청산: 방금 완성된 5분봉 SAR 방향이 포지션과 반대면 시장가 청산
+   // 반대 콩 청산: 방금 완성된 5분봉 SAR 방향이 포지션과 반대면 시장가 청산 (sarDir / sarBar에 방향을 남겨 실패하면 Timer가 다시)
    void SarExit(datetime bar)
    {
+      sarDir = 0;
+      sarBar = bar;
       int tk = MyTicket(magic);
       if (!M_SAR_EXIT || tk < 0 || !OrderSelect(tk, SELECT_BY_TICKET))
          return;
@@ -430,11 +444,38 @@ public:
       if (n < 50 || t[n - 1] != bar)
          return;
       Psar(h, l, n, up);
-      if ((up[n - 1] ? 1 : -1) == pside)
+      sarDir = up[n - 1] ? 1 : -1;
+      if (sarDir == pside)
          return;
       Print(StringFormat("[%s] 5분봉 SAR %s 전환 -> 반대 콩 청산: 티켓 %d", tag, up[n - 1] ? "상승" : "하락", tk));
       sarClose = true;
+      lastExitTry = TimeLocal();
       CloseTicket(tag, tk, M_SLIP_USD);
+   }
+
+   // 반대 콩 청산이 실패했으면 닫힐 때까지 5초마다 다시. sarDir가 최신 완성 봉 것일 때만 (demo_trader와 같음)
+   void SarExitRetry(datetime bar)
+   {
+      if (!M_SAR_EXIT || sarBar != bar || TimeLocal() - lastExitTry < 5)
+         return;
+      if (sarDir == 0)
+      {
+         // 방향을 못 구했으면(켤 때 봉·주문 조회 실패 등) 포지션이 있는 동안 5초마다 다시 계산 (반대면 SarExit가 청산)
+         if (MyTicket(magic) < 0)
+            return;
+         lastExitTry = TimeLocal();
+         SarExit(bar);
+         CheckClosed();
+         return;
+      }
+      int tk = MyTicket(magic);
+      if (tk < 0 || !OrderSelect(tk, SELECT_BY_TICKET) || (OrderType() == OP_BUY ? 1 : -1) == sarDir)
+         return;
+      lastExitTry = TimeLocal();
+      Print(StringFormat("[%s] 반대 콩 청산 다시 시도: 티켓 %d", tag, tk));
+      sarClose = true;
+      CloseTicket(tag, tk, M_SLIP_USD);
+      CheckClosed();
    }
 
    //---- Infinox_Bots.mq4에서 부름
@@ -445,6 +486,7 @@ public:
       ventry = StringToDouble(StGet(st, "ventry", "0"));
       lastBar = iTime(NULL, PERIOD_M5, 1);     // 켜진 뒤 새로 완성되는 봉부터 판단
       ticket = MyTicket(magic);
+      SarExit(lastBar);                         // 기존 포지션이 최신 완성 봉 SAR과 반대면 바로 청산 (실패하면 SarExitRetry)
       if (ticket >= 0 && OrderSelect(ticket, SELECT_BY_TICKET))
       {
          openLot = OrderLots();
@@ -477,6 +519,12 @@ public:
       datetime now = TimeCurrent();
       CheckClosed();
       CheckVirtual();
+      // 계좌 손실 한도는 신호가 없어도 5초마다 감시 (한도에 닿으면 halted가 남아 신규 진입 중단)
+      if (on && TimeLocal() - lastRisk >= 5)
+      {
+         lastRisk = TimeLocal();
+         RiskBlock(tag, st, M_ACCOUNT_STOP_PCT);
+      }
       if (TimeDayOfWeek(now) == 5 && Minutes(now) >= M_FRIDAY_CLOSE && TimeLocal() - lastCloseTry > 60)
       {
          int tk = MyTicket(magic);
@@ -488,8 +536,13 @@ public:
          }
       }
       datetime bar = iTime(NULL, PERIOD_M5, 1);
-      if (bar == 0 || bar == lastBar)
+      if (bar == 0)
          return;
+      if (bar == lastBar)
+      {
+         SarExitRetry(bar);
+         return;
+      }
       lastBar = bar;
       SarExit(bar);
       CheckClosed();      // 반대 콩으로 닫혔으면 새 진입 전에 기록

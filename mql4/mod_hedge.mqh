@@ -159,6 +159,11 @@ public:
          why = StringFormat("신호 봉 마감 %d초 뒤 (재시작·멈춤)", late);
          return true;
       }
+      if (!TickFresh())
+      {
+         why = StringFormat("시세 멈춤 / 연결 끊김 (틱 %d초 넘게 없음)", TICK_FRESH_SEC);
+         return true;
+      }
       return false;
    }
 

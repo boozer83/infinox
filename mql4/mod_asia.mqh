@@ -7,7 +7,7 @@
 //    미국 휴일 조기 마감일(연방 공휴일·추수감사절 다음 날·12/24, 마지막 시세 19:44~21:44)은 19:30에 청산
 // 5. 신호 강도 (v2): 돌파 봉 종가가 전일 고가 위(매수) / 전일 저가 아래(매도)면 가중치 1.5, 아니면 0.5
 // 자금관리: lot = 사이클 시작 잔고 x 위험% x 가중치 x 2^(단계-1) / (U x 1 lot 1$당 손익), 결과 0 이하면 다음 단계, 최대 3단계 (1·2·4배)
-// 상태: MQL4\Files\<상태 파일> (오늘 처리 여부, 마틴 단계, 사이클 시작 잔고, 최고 잔고)
+// 상태: MQL4\Files\<상태 파일> (오늘 처리 여부, 마틴 단계, 사이클 시작 잔고, 최고 잔고, 열린 티켓 - EA가 꺼진 동안 닫혀도 단계 반영)
 
 #define A_RANGE_FROM 65              // 01:05
 #define A_RANGE_UNTIL 540            // 09:00
@@ -179,7 +179,9 @@ public:
          reason = "TIME";
       int lvl = Level();
       int nxt = profit > 0 ? 0 : (lvl + 1 < A_MARTIN_STEPS ? lvl + 1 : 0);
-      StSet(st, "level", IntegerToString(nxt));
+      // 단계와 처리한 티켓을 한 번에 (다시 켜도 두 번 반영 안 되게). 저장 실패면 다음 초에 다시
+      if (!StSet2(st, "level", IntegerToString(nxt), "ticket", "-1"))
+         return;
       string icon = reason == "TP" ? "✅ 익절" : reason == "SL" ? "❌ 손절" : reason == "TIME" ? "⏹ 시간 청산" : "⏹ 청산";
       Send(tag, StringFormat("%s %s %.2f lot\n%.2f → %.2f\n손익 %+.2f$\n다음 진입: 마틴 %d/%d단계\n%s\n%s",
                              icon, openSide == 1 ? "BUY" : "SELL", openLot, openPx, px, profit, nxt + 1, A_MARTIN_STEPS,
@@ -259,6 +261,11 @@ public:
          Print(desc, " -> 포지션 보유 중이라 진입 안 함");
          return;
       }
+      if (ticket >= 0)
+      {
+         Print(desc, " -> 지난 청산의 마틴 단계를 아직 저장 못 해서 진입 안 함");
+         return;
+      }
       int lvl = Level();
       double risk;
       double lot = PlanLot(lvl, u, w, true, risk);
@@ -279,6 +286,7 @@ public:
       if (tk < 0)
          return;
       ticket = tk;
+      StSet(st, "ticket", IntegerToString(tk));   // EA가 꺼진 동안 닫혀도 다시 켤 때 마틴 단계를 맞추려고
       openLot = lot;
       openPx = fill;
       openSide = side;
@@ -297,13 +305,19 @@ public:
          return;
       lastBar = iTime(sym, PERIOD_M5, 1);
       ticket = MyTicketSym(sym, magic);
+      int saved = (int)StringToInteger(StGet(st, "ticket", "-1"));
+      if (ticket < 0 && saved >= 0)
+         ticket = saved;               // 꺼진 동안 닫힌 포지션: 첫 Timer의 CheckClosed가 마틴 단계를 갱신하고 알림
       if (ticket >= 0 && OrderSelect(ticket, SELECT_BY_TICKET))
       {
          openLot = OrderLots();
          openPx = OrderOpenPrice();
          openSide = OrderType() == OP_BUY ? 1 : -1;
-         Print("[", tag, "] 기존 포지션 이어받음: 티켓 ", ticket);
+         StSet(st, "ticket", IntegerToString(ticket));
+         Print("[", tag, "] ", OrderCloseTime() > 0 ? "꺼진 동안 닫힌 포지션 기록: 티켓 " : "기존 포지션 이어받음: 티켓 ", ticket);
       }
+      else
+         ticket = -1;
    }
 
    string StartText()
