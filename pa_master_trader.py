@@ -4,7 +4,8 @@
 - 1시간봉이 완성될 때마다 판단
 - 신호: 장악형 / 핀바 / 샛별·석별 중 Grade-A (EMA21·200 가치 구간 또는 BOS 방향). 거래량 조건은 끔
 - 진입: 바로 시장가 (= 다음 봉 시가). 손절 = 패턴 끝 (매수 = 패턴 저가, 매도 = 패턴 고가)
-- 익절: 신호 봉 종가 ± 3 x (종가 - 패턴 끝) (3R). 둘 다 주문과 함께 서버에 설정, 그 밖의 청산 없음
+- 익절: 실제 진입가 ± 3 x (진입가 - 패턴 끝) (3R). 둘 다 주문과 함께 서버에 설정, 그 밖의 청산 없음
+  (트레이딩뷰는 신호 봉 종가 기준. 진입가 기준이 같은 거래에서 더 벌어서 바꿈 (2026-10-28): +98R -> +111.5R, 승패 바뀐 거래 0건)
 - 수량: 손절에 걸리면 잔고의 RISK_PCT(0.5%)를 잃도록 (0.01 단위 내림). 포지션은 한 번에 1개
 - 지금 가격이 이미 손절가 너머면 진입 안 함
 백테스트 (실제 틱 체결, 2022-01 ~ 2026-10): 358건 승률 32.4% 거래당 +0.27R 합계 +98R 최대 낙폭 15.4R, 5년 모두 플러스
@@ -80,11 +81,11 @@ def lot_for(sl_dist):
 def place(side, end, close, kind, signal_bar):
     tick = mt5.symbol_info_tick(SYMBOL)
     px = tick.ask if side == 1 else tick.bid
-    tp = close + R_MULT * (close - end)                            # 신호 봉 종가 ± 3R (매도는 end > close)
-    sl_dist, tp_dist = (px - end) * side, (tp - px) * side
-    if sl_dist <= 0 or tp_dist <= 0:
-        log.info(f"지금 가격 {px}가 이미 손절가 {end} 또는 익절가 {tp:.2f} 너머라 진입 안 함")
+    sl_dist = (px - end) * side
+    if sl_dist <= 0:
+        log.info(f"지금 가격 {px}가 이미 손절가 {end} 너머라 진입 안 함")
         return None
+    tp_dist = R_MULT * sl_dist                                     # 실제 진입가 ± 3R
     lot, forced = lot_for(sl_dist)
     f = bot.open(side, lot, f"PA {kind} {R_MULT:g}R", sl_dist=sl_dist, tp_dist=tp_dist)
     if f is None:
