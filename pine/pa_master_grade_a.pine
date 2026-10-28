@@ -5,7 +5,7 @@
 //   익절: 진입가 + 위험 x R 배수 (기본 2R)
 // 파이썬 백테스트(backtests/tv_batch2.py pa_master, tv_pa.py)와 같은 규칙. 금 1시간봉 기준으로 시험함.
 // 거래량 조건은 원본 그대로 (트레이딩뷰 금 차트의 거래량 = 틱 수, 브로커마다 다름)
-// (2026-10-28 사용자가 텔레그램으로 보낸 코드를 그대로 옮김. 위 tv_batch2.py / tv_pa.py는 이 폴더에 없음 - 다른 AI가 만든 것으로 보임)
+// (2026-10-28 사용자가 텔레그램으로 보낸 코드를 그대로 옮김. tv_batch2.py / tv_pa.py는 backtests/ 에 있음, docs/tv_indicators_2026-10-28.md)
 //@version=6
 strategy("PA Master Grade-A Strategy", shorttitle = "PA-A Strat", overlay = true, initial_capital = 10000,
      default_qty_type = strategy.percent_of_equity, default_qty_value = 10, process_orders_on_close = false,

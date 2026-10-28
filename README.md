@@ -314,6 +314,11 @@ docs/                   분석 문서, 작업 기록
 | `gold_rest_others` | 금 마틴이 쉬기 필터로 쉬는 동안 같은 전략을 은/비트코인에 적용 (1분봉 zip, 마틴 포함) | 은 PF 0.36~0.56, 비트코인 0.47~0.71. 마틴을 넣으면 깡통 |
 | `martin_trend_combo` | 금 마틴 + 4시간봉 추세추종을 한 계좌에서 운용 (1분봉 zip, 스왑 포함, 급변동 쉬기 전 규칙) | 2022-01부터 1,000달러: 마틴만 3,488달러 (낙폭 38%), 둘 다 7,841달러 (낙폭 41%). 추세추종을 23:50에 청산하고 다음 날 재진입해 스왑을 피하면 +8%지만, 재진입 비용이 0.25달러/온스를 넘으면 손해라서 그냥 보유 |
 | `download_bars` | 다른 종목 1분봉을 연도별 zip으로 저장 (`data/bars/`) | 데이터 준비용 |
+| `tv_single`, `tv_symbols`, `tv_overlap` | 트레이딩뷰 지표 33개를 하나씩 (15분/1시간/4시간봉), 13개 종목, 지금 추세 봇과 겹침 | 역추세 전부 손실, 4시간봉 추세형만 수익인데 추세 봇과 91% 겹침 |
+| `tv_po3`, `tv_sqz`, `tv_guppy`, `tv_bbst`, `tv_nwz`, `tv_fvg`, `tv_batch2`, `tv_batch3` | 사용자가 준 트레이딩뷰 지표·전략 14개 (원본 Pine 규칙대로) | PA Master Grade-A 하나만 통과 |
+| `tv_pa`, `tv_pa_ticks`, `tv_pa_symbols`, `tv_pa_portfolio` | PA Master Grade-A: 설정 흔들기, 틱 체결, 다른 종목, 포트폴리오 | **금 1시간봉 3R, 틱 체결 356거래 +0.26R/거래, 5년 모두 플러스.** 은은 틱에서 무너짐. 자세히: `docs/tv_indicators_2026-10-28.md` |
+| `tv_pa_improve` | PA Master 승률 올리기: 4시간봉 추세 필터, 나눠 익절, 본전 손절 (2022~24로 고르고 2025~26 확인) | 전부 채택 안 함. 승률 오르면 거래당 R 절반 |
+| `tv_macketing`, `tv_trendscalper`, `tv_signalcharge` | 단타 지표 3개 (Macketings 1min Scalping, Trend Scalper, Signal Charge) | 1분 ~ 15분 전부 PF < 1. 비용 0으로도 0.92 ~ 1.05 (방향 맞히는 힘이 거의 없음) |
 
 ```powershell
 python -m backtests.long_period     # 장기 백테스트 + 월별 수익률
