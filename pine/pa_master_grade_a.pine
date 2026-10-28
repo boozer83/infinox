@@ -1,0 +1,166 @@
+// PA Master Grade-A 전략판 (원본: Institutional Price Action Master v2.1 © JuanDeNogoya, MPL 2.0)
+// 원본 지표의 Grade-A 신호(EMA 가치 구간 또는 BOS 방향의 장악형 / 핀바 / 샛별)만 매매합니다.
+//   진입: 신호 봉 마감 -> 다음 봉 시가 (한 번에 한 포지션)
+//   손절: 지표가 그리는 손절점 (매수 = 패턴 저가, 매도 = 패턴 고가)
+//   익절: 진입가 + 위험 x R 배수 (기본 2R)
+// 파이썬 백테스트(backtests/tv_batch2.py pa_master, tv_pa.py)와 같은 규칙. 금 1시간봉 기준으로 시험함.
+// 거래량 조건은 원본 그대로 (트레이딩뷰 금 차트의 거래량 = 틱 수, 브로커마다 다름)
+// (2026-10-28 사용자가 텔레그램으로 보낸 코드를 그대로 옮김. 위 tv_batch2.py / tv_pa.py는 이 폴더에 없음 - 다른 AI가 만든 것으로 보임)
+//@version=6
+strategy("PA Master Grade-A Strategy", shorttitle = "PA-A Strat", overlay = true, initial_capital = 10000,
+     default_qty_type = strategy.percent_of_equity, default_qty_value = 10, process_orders_on_close = false,
+     calc_on_every_tick = false)
+
+// ── 전략 설정 ──
+rrTarget  = input.float(2.0, "익절 R 배수", minval = 0.5, step = 0.5, group = "전략")
+allowLong = input.bool(true, "매수", inline = "dir", group = "전략")
+allowShrt = input.bool(true, "매도", inline = "dir", group = "전략")
+
+// ── 원본 지표 기본값 ──
+pivotLen       = input.int(5, "Structural Pivot Length", minval = 2, group = "지표")
+bosBuffer      = 1
+emaFastLen     = input.int(21, "Fast EMA", group = "지표")
+emaSlowLen     = input.int(200, "Macro EMA", group = "지표")
+emaTouchAtr    = input.float(0.5, "EMA Value Zone Tolerance (ATR)", step = 0.1, group = "지표")
+minEngBodyAtr  = input.float(0.6, "[Engulfing] Min Body Size (ATR)", step = 0.1, group = "지표")
+minCloseStr    = 0.65
+minPinRangeAtr = 0.8
+minWickRatio   = 0.60
+maxNoseRatio   = 0.15
+maxStarBodyAtr = 0.45
+minPenetration = 0.50
+swingLookback  = 5
+useVolFilter   = input.bool(true, "Require Volume > Average", group = "지표")
+volMult        = input.float(1.1, "Volume Multiplier (vs SMA 20)", step = 0.1, group = "지표")
+
+// ── 공통 계산 ──
+atr      = ta.atr(14)
+volSma   = ta.sma(volume, 20)
+emaFast  = ta.ema(close, emaFastLen)
+emaMacro = ta.ema(close, emaSlowLen)
+lowest3  = ta.lowest(low, 3)
+highest3 = ta.highest(high, 3)
+lowest4  = ta.lowest(low, 4)
+highest4 = ta.highest(high, 4)
+
+hasVol  = nz(volume) > 0
+volBase = (useVolFilter and hasVol) ? (volume > volSma * volMult) : true
+
+rangeCurr    = high - low
+bodyCurr     = math.abs(close - open)
+bodyPrev     = math.abs(close[1] - open[1])
+bullCloseStr = rangeCurr > 0 ? (close - low) / rangeCurr : 0.0
+bearCloseStr = rangeCurr > 0 ? (high - close) / rangeCurr : 0.0
+
+// ── 구조 (BOS) ──
+ph = ta.pivothigh(high, pivotLen, pivotLen)
+pl = ta.pivotlow(low, pivotLen, pivotLen)
+
+var float lastPH     = na
+var float lastPL     = na
+var int   structTrd  = 0
+var int   lastBosBar = 0
+var int   lastBosDir = 0
+var int   lastChochBar = 0
+
+crossOverPH  = ta.crossover(close, nz(lastPH))
+crossUnderPL = ta.crossunder(close, nz(lastPL))
+
+if not na(ph)
+    if not na(lastPH)
+        structTrd := ph > lastPH ? 1 : -1
+    lastPH := ph
+if not na(pl)
+    lastPL := pl
+
+bosUp   = (structTrd == 1) and not na(lastPH) and crossOverPH
+bosDown = (structTrd == -1) and not na(lastPL) and crossUnderPL
+canShowBosUp   = bosUp and (bar_index - lastBosBar >= bosBuffer) and (lastBosDir != 1 or close > lastPH * 1.001)
+canShowBosDown = bosDown and (bar_index - lastBosBar >= bosBuffer) and (lastBosDir != -1 or close < lastPL * 0.999)
+chochUpRT   = (structTrd == -1) and not na(lastPH) and crossOverPH and (bar_index - lastChochBar >= bosBuffer)
+chochDownRT = (structTrd == 1) and not na(lastPL) and crossUnderPL and (bar_index - lastChochBar >= bosBuffer)
+
+if canShowBosUp
+    lastBosBar := bar_index
+    lastBosDir := 1
+if canShowBosDown
+    lastBosBar := bar_index
+    lastBosDir := -1
+if chochUpRT
+    lastChochBar := bar_index
+    structTrd    := 1
+if chochDownRT
+    lastChochBar := bar_index
+    structTrd    := -1
+
+// ── 장악형 ──
+isBullEngRaw = (close[1] < open[1]) and (close > open) and (open <= close[1] and close > open[1]) and (bodyCurr > bodyPrev) and (bodyCurr >= atr * minEngBodyAtr) and (bodyCurr <= atr * 2.8) and (bullCloseStr >= minCloseStr)
+isBearEngRaw = (close[1] > open[1]) and (close < open) and (open >= close[1] and close < open[1]) and (bodyCurr > bodyPrev) and (bodyCurr >= atr * minEngBodyAtr) and (bodyCurr <= atr * 2.8) and (bearCloseStr >= minCloseStr)
+engPrevDown  = close[1] < close[swingLookback] and low <= lowest3
+engPrevUp    = close[1] > close[swingLookback] and high >= highest3
+engVolCond   = volBase and (useVolFilter and hasVol ? volume > volume[1] : true)
+bullEngSig   = isBullEngRaw and engPrevDown and engVolCond
+bearEngSig   = isBearEngRaw and engPrevUp and engVolCond
+
+// ── 핀바 ──
+bodyTop        = math.max(open, close)
+bodyBot        = math.min(open, close)
+lowerWickRatio = rangeCurr > 0 ? (bodyBot - low) / rangeCurr : 0.0
+upperWickRatio = rangeCurr > 0 ? (high - bodyTop) / rangeCurr : 0.0
+bullBodyPos    = rangeCurr > 0 ? (high - bodyBot) / rangeCurr : 1.0
+bearBodyPos    = rangeCurr > 0 ? (bodyTop - low) / rangeCurr : 1.0
+validPinSize   = (rangeCurr >= atr * minPinRangeAtr) and (rangeCurr <= atr * 3.0)
+bullPinSig = validPinSize and (lowerWickRatio >= minWickRatio) and (upperWickRatio <= maxNoseRatio) and (bullBodyPos <= 0.35) and engPrevDown and volBase
+bearPinSig = validPinSize and (upperWickRatio >= minWickRatio) and (lowerWickRatio <= maxNoseRatio) and (bearBodyPos <= 0.35) and engPrevUp and volBase
+
+// ── 샛별 / 석별 ──
+body1    = math.abs(close[2] - open[2])
+body2    = math.abs(close[1] - open[1])
+body2Top = math.max(open[1], close[1])
+body2Bot = math.min(open[1], close[1])
+starLow  = math.min(low[2], math.min(low[1], low))
+starHigh = math.max(high[2], math.max(high[1], high))
+validV1Size   = body1 >= atr[2] * minEngBodyAtr
+validStarSize = (body2 <= atr[1] * maxStarBodyAtr) and (body2 < body1 * 0.6)
+starPosBull   = body2Bot <= close[2] and body2Top <= (close[2] + body1 * 0.5)
+starPosBear   = body2Top >= close[2] and body2Bot >= (close[2] - body1 * 0.5)
+validV3Bull   = (close > open) and (close >= close[2] + body1 * minPenetration) and (close > body2Top) and (bullCloseStr >= minCloseStr - 0.05)
+validV3Bear   = (close < open) and (close <= close[2] - body1 * minPenetration) and (close < body2Bot) and (bearCloseStr >= minCloseStr - 0.05)
+isMorningRaw  = (close[2] < open[2]) and validV1Size and validStarSize and starPosBull and validV3Bull
+isEveningRaw  = (close[2] > open[2]) and validV1Size and validStarSize and starPosBear and validV3Bear
+starPrevDown  = close[2] < close[2 + swingLookback] and starLow <= lowest4
+starPrevUp    = close[2] > close[2 + swingLookback] and starHigh >= highest4
+bullStarSig   = isMorningRaw and starPrevDown and volBase
+bearStarSig   = isEveningRaw and starPrevUp and volBase
+
+// ── Grade-A 판정 ──
+anyBull = bullEngSig or bullPinSig or bullStarSig
+anyBear = bearEngSig or bearPinSig or bearStarSig
+patLow  = bullStarSig ? starLow : math.min(low, low[1])
+patHigh = bearStarSig ? starHigh : math.max(high, high[1])
+
+bullMacro = close > emaMacro
+bearMacro = close < emaMacro
+inBullValueZone = (patLow <= emaFast + atr * emaTouchAtr and close >= emaFast - atr * 0.25) or (patLow <= emaMacro + atr * emaTouchAtr and close >= emaMacro - atr * 0.25)
+inBearValueZone = (patHigh >= emaFast - atr * emaTouchAtr and close <= emaFast + atr * 0.25) or (patHigh >= emaMacro - atr * emaTouchAtr and close <= emaMacro + atr * 0.25)
+
+gradeBull = anyBull and not anyBear and ((bullMacro and inBullValueZone) or canShowBosUp)
+gradeBear = anyBear and not anyBull and ((bearMacro and inBearValueZone) or canShowBosDown)
+
+// ── 주문 ──
+// 신호 봉에서 진입(다음 봉 시가)과 손절·익절을 같이 걸어 둠. 위험 = 신호 봉 종가 - 패턴 끝
+// (파이썬 백테스트는 실제 체결가 기준이라 익절 가격이 시가 갭만큼 조금 다를 수 있음)
+if strategy.position_size == 0
+    if gradeBull and allowLong and close > patLow
+        float risk = close - patLow
+        strategy.entry("L", strategy.long)
+        strategy.exit("L-X", "L", stop = patLow, limit = close + rrTarget * risk)
+    else if gradeBear and allowShrt and close < patHigh
+        float risk = patHigh - close
+        strategy.entry("S", strategy.short)
+        strategy.exit("S-X", "S", stop = patHigh, limit = close - rrTarget * risk)
+
+plotshape(gradeBull, "Grade-A 매수", shape.triangleup, location.belowbar, color.green, size = size.small)
+plotshape(gradeBear, "Grade-A 매도", shape.triangledown, location.abovebar, color.red, size = size.small)
+plot(emaFast, "EMA 21", color.new(color.aqua, 30))
+plot(emaMacro, "EMA 200", color.new(color.orange, 15), 2)
