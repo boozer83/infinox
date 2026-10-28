@@ -10,6 +10,9 @@
    미국 휴일 조기 마감일(연방 공휴일·추수감사절 다음 날·12/24, 마지막 시세 19:44~21:44)은 19:30에 청산
    (전에는 23:00에 장이 닫혀 있어 다음 날 01:00에 청산됨, 2022~26 금 8건 / XAUEUR 7건)
 6. 신호 강도 (v2): 돌파 봉 종가가 전일 고가 위(매수) / 전일 저가 아래(매도)면 강한 신호 가중치 1.5, 아니면 0.5
+7. 넓은 날 가중 (2026-10-28, backtests/asia_range_check.py, 데모만 WIDE_LIVE=False): 돌파 봉까지 5분봉 24개(2시간)
+   고가-저가가 일봉 ATR(14, 단순평균, 전일까지)의 WIDE_TH(0.4)배 이상이면 가중치 x WIDE_MULT(1.5). 값은 실계좌도 로그에 남김
+   (2022~2026.10 금: 넓은 날 89건 승률 61.8% +0.24R vs 좁은 날 477건 49.7% +0.06R. 금+XAUEUR 마틴 49,542 -> 63,187$, 낙폭 14.1 -> 14.4%)
 
 자금관리 (마틴 3단계, 날짜를 넘어 이어짐):
 - lot = 사이클 시작 잔고 × RISK_PCT% × 가중치 × 2^(단계-1) / (U × 100온스), 0.01 단위 내림, 최소 0.01
@@ -72,6 +75,9 @@ ATR_MULT = 0.5             # 기준폭 U = 일봉 ATR(14) × 0.5
 TP_RATIO = 1.0             # 익절 = U × 1.0
 SL_RATIO = 0.75            # 손절 = U × 0.75
 W_STRONG, W_WEAK = 1.5, 0.5    # 신호 강도 가중치 (전일 고가/저가 돌파면 강함)
+WIDE_TH, WIDE_MULT, WIDE_BARS = 0.4, 1.5, 24   # 넓은 날 가중 (7번)
+WIDE_LIVE = False          # 실계좌는 끔 (데모에서 먼저 확인)
+wide_on = True             # main()에서 실계좌면 WIDE_LIVE로 바꿈
 MOM_DAYS = 5               # 모멘텀: 전일 종가 vs (MOM_DAYS+1)거래일 전 종가
 # 자금관리
 RISK_PCT = 0.6             # 1단계 lot = 사이클 시작 잔고의 0.6% / 손절폭 (XAUEUR 아시아와 같이 돌려서 1% -> 0.6%, 2026-10-24)
@@ -173,6 +179,19 @@ def daily_features(today):
     return atr, mom, float(d1.high.iat[-1]), float(d1.low.iat[-1])
 
 
+def wide_ratio(m5, bar):
+    """돌파 봉까지 5분봉 WIDE_BARS개 (고가-저가) / 일봉 ATR(14, TR 단순평균, 전일까지). 못 구하면 None"""
+    d1 = bot.rates(mt5.TIMEFRAME_D1, 30, min_bars=16)
+    if d1 is None:
+        return None
+    d1 = d1[d1.time.dt.date < bar.date()].reset_index(drop=True)
+    pc = d1.close.shift()
+    tr = np.maximum(d1.high - d1.low, np.maximum((d1.high - pc).abs(), (d1.low - pc).abs()))
+    datr = float(tr.iloc[-14:].mean())
+    w = m5[m5.time <= bar].iloc[-WIDE_BARS:]
+    return float(w.high.max() - w.low.min()) / datr if datr > 0 and len(w) == WIDE_BARS else None
+
+
 def asian_range(m5, today):
     t = m5[(m5.time.dt.date == today)]
     mins = t.time.dt.hour * 60 + t.time.dt.minute
@@ -236,7 +255,7 @@ def risk_block(now, lot):
 
 
 # ---------------------------------------------------------------- 주문
-def place(side, lot, level, u, w, info_row):
+def place(side, lot, level, u, w, info_row, strength=None):
     sl_usd, tp_usd = u * SL_RATIO, u * TP_RATIO
     f = bot.open(side, lot, f"asia brk L{level}", sl_dist=sl_usd, tp_dist=tp_usd)
     if f is None:
@@ -245,7 +264,7 @@ def place(side, lot, level, u, w, info_row):
     row = dict(info_row, side="BUY" if side == 1 else "SELL", level=level + 1, lot=lot, sl_usd=round(sl_usd, 2),
                order_time=datetime.now().strftime("%Y-%m-%d %H:%M:%S"), fill_price=fill,
                spread=round(f.tick.ask - f.tick.bid, 3), sl=sl, tp=tp, ticket=f.res.order)
-    strength = "강한 신호" if w == W_STRONG else "약한 신호"
+    strength = strength or ("강한 신호" if w == W_STRONG else "약한 신호")
     log.info(f"진입 {row['side']} {lot}lot (마틴 {level + 1}단계, {strength} x{w:g}) @ {fill}, SL {sl}, TP {tp} "
              f"(손절 {sl_usd:.2f}$ / 익절 {tp_usd:.2f}$)")
     bot.send(f"{'🟢 매수' if side == 1 else '🔴 매도'} 진입 {lot} lot (마틴 {level + 1}/{MARTIN_STEPS}단계, {strength} x{w:g})\n"
@@ -268,7 +287,7 @@ def notify_close(row):
 
 # ---------------------------------------------------------------- 메인
 def main():
-    global bot, CONTRACT
+    global bot, CONTRACT, wide_on
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true", help="주문 없이 신호만 계산")
     ap.add_argument("--live", action="store_true", help="실계좌에서도 실행 (기본은 데모 전용)")
@@ -276,6 +295,7 @@ def main():
     args = ap.parse_args()
     if args.live:
         use_live_paths()
+        wide_on = WIDE_LIVE
     if args.symbol:
         use_symbol(args.symbol, args.live)
     bot = Trader(STRATEGY, SYMBOL, MAGIC, DEVIATION, LOG_DIR, "asia", live=args.live)
@@ -299,6 +319,8 @@ def main():
             aim = RISK_PCT * w * SL_RATIO * MARTIN_MULT ** lvl
             msg += (f"\n{lvl + 1}단계 {name} {lot} lot (손절 시 잔고의 {risk:.2f}%, 목표 {aim:.2f}%"
                     f"{' — 최소 lot 때문에 큼' if risk > aim * 1.3 else ''})")
+    msg += (f"\n넓은 날 가중: 돌파 직전 2시간 범위 ≥ 일봉 ATR x{WIDE_TH:g}면 lot x{WIDE_MULT:g}" if wide_on
+            else "\n넓은 날 가중 꺼짐 (2시간 범위는 로그에만)")
     if early_close_day(now.date()):
         msg += f"\n오늘은 미국 휴일 조기 마감일 -> {EARLY_EXIT_AT}에 청산"
     log.info(f"시작: 계좌 {acc.login} ({acc.server}, {kind}) 잔고 {acc.balance}, 다음 진입 마틴 {lvl + 1}단계. {msg}"
@@ -365,9 +387,15 @@ def main():
             u = day_info["atr"] * ATR_MULT
             strong = close > day_info["ph"] if side == 1 else close < day_info["pl"]
             w = W_STRONG if strong else W_WEAK
+            r2 = wide_ratio(m5, bar)
+            wide = r2 is not None and r2 >= WIDE_TH
+            strength = ("강한 신호" if strong else "약한 신호") + (" + 넓은 날" if wide and wide_on else "")
+            r2_txt = f"2시간 범위 {r2:.2f} ATR" if r2 is not None else "2시간 범위 없음"
+            if wide and wide_on:
+                w *= WIDE_MULT
             desc = (f"봉 {bar:%m-%d %H:%M} 종가 {close} {'상향' if side == 1 else '하향'} 돌파 "
                     f"(레인지 {lo}~{hi}, {nbars}봉), 5일 모멘텀 {day_info['mom']:+d}, 일봉 ATR {day_info['atr']:.2f}, "
-                    f"전일 고/저 {day_info['ph']}/{day_info['pl']} -> {'강한' if strong else '약한'} 신호 x{w:g}")
+                    f"전일 고/저 {day_info['ph']}/{day_info['pl']} -> {r2_txt}{' (넓은 날)' if wide else ''} -> {strength} x{w:g}")
             if bar != last_bar:
                 log.info(f"{desc} -> 첫 돌파가 이미 지난 봉이라 (재시작 등) 오늘은 진입 안 함")
             elif side != day_info["mom"]:
@@ -388,7 +416,7 @@ def main():
                     log.info(f"{desc} -> 진입 (손절 시 잔고의 {risk:.2f}%)")
                     info_row = {"date": str(today), "signal_bar": bar.strftime("%Y-%m-%d %H:%M"), "range_hi": hi,
                                 "range_lo": lo, "daily_atr": round(day_info["atr"], 2), "signal_price": close}
-                    open_row = place(side, lot, lvl, u, w, info_row)
+                    open_row = place(side, lot, lvl, u, w, info_row, strength)
             time.sleep(POLL_SEC)
 
 

@@ -40,6 +40,12 @@
 - 신호 봉 종가가 방금 뚫은 SAR 값에서 ATR x MAX_EXT(0.8) 넘게 갔거나,
   새 SAR 점(반대 콩 자리)에서 ATR x MAX_RISK(2.8) 넘게 떨어져 있으면 진입 안 함 (이미 많이 간 자리)
   (반대 콩 청산 기준: 2025 +66% -> +73%, 낙폭 38.9% -> 29.8% / 2026 +741% -> +967%, 24.0% -> 19.2%)
+급등락 직후 쉬기 (2026-10-28 추가, backtests/sar_range_rest.py, 데모만 켬 RANGE_REST_LIVE=False):
+- 최근 완성 5분봉 24개(2시간) 고가-저가가 일봉 ATR(14, 어제까지)의 0.4배 이상이면 진입 안 함
+  (2022~2026.10 실제 틱: 승률 58.6% -> 58.9%, 5년 합 +651 -> +731 oz, 낙폭 166 -> 176 oz)
+손절 10$ (2026-10-28, backtests/sar_tp_grid.py, 데모만 SL_USD_LIVE=7.5):
+- 손절 7.5 -> 10 (익절 3 그대로). 2022~2026.10 실제 틱: 승률 58.6% -> 59.6%, 5년 합 +651 -> +719 oz, 낙폭 166 -> 166 oz
+  (바뀌는 거래 9%, 8.5는 오히려 줄고 15는 같아서 데모에서 몇 주 확인)
 반대 콩 청산 (2026-10-21 추가):
 - 포지션 보유 중 5분봉 SAR이 반대로 전환되면(완성 봉 기준) TP/SL 전이라도 시장가 청산 (SAR_EXIT)
   (backtests/sar_exit.py, 승률 쉬기 끔 기준: 2026 +751% -> +741%, 낙폭 27.8% -> 24.0% / 2025 +70% -> +66%, 44.7% -> 38.9%)
@@ -89,7 +95,8 @@ from config import SYMBOL
 from indicators import atr, psar, psar_levels, rsi
 
 # 전략
-SL_USD = 7.5
+SL_USD = 10.0             # 데모 (2026-10-28 7.5 -> 10, backtests/sar_tp_grid.py). main()에서 실계좌면 SL_USD_LIVE
+SL_USD_LIVE = 7.5         # 실계좌는 아직 7.5
 TP_USD = 3.0
 # 마틴
 MARTIN = False             # False면 손절해도 lot을 키우지 않고 항상 시작 lot (5번째 손절 정지도 없음)
@@ -113,6 +120,12 @@ ATR_REF_MIN = 2000         # 기록이 이보다 적으면 이 필터는 건너�
 # 과열 거르기: (종가 - 뚫은 SAR 값) / ATR, (종가 - 새 SAR 점) / ATR 이 넘으면 진입 안 함
 MAX_EXT = 0.8
 MAX_RISK = 2.8
+# 급등락 직후 쉬기 (2026-10-28, backtests/sar_range_rest.py): 최근 완성 5분봉 RANGE_REST_BARS개(2시간)의 고가-저가가
+# 일봉 ATR(14, 어제까지)의 RANGE_REST_MULT배 이상이면 진입 안 함. 승률 58.6 -> 58.9%, 5년 합 651 -> 731 oz
+RANGE_REST_MULT = 0.4
+RANGE_REST_BARS = 24
+RANGE_REST_LIVE = False   # 실계좌는 아직 끔 (데모·2마틴·MT4 따라하기에서 먼저 확인)
+range_rest_on = True      # main()에서 실계좌면 RANGE_REST_LIVE로 바꿈
 # 마틴 lot 상한: 그날 시작 lot의 몇 배까지
 MAX_LOT_MULT = 5
 # 성적 기반 쉬기: 최근 N개 결과(실제 + 가상) 승률이 이 값(%) 미만이면 가상 진입만
@@ -209,6 +222,23 @@ def overextended(m5, side):
         return f"뚫은 SAR에서 {ext:.2f} ATR (> {MAX_EXT})"
     if risk > MAX_RISK:
         return f"새 SAR 점까지 {risk:.2f} ATR (> {MAX_RISK})"
+    return None
+
+
+def range_rest(m5):
+    """최근 2시간 범위가 일봉 ATR의 RANGE_REST_MULT배 이상이면 이유 문자열, 아니면 None (일봉 조회 실패도 None)"""
+    if not range_rest_on:
+        return None
+    d1 = bot.rates(mt5.TIMEFRAME_D1, 20, min_bars=15)
+    if d1 is None:
+        return None
+    pc = d1.close.shift(1)
+    tr = pd.concat([d1.high - d1.low, (d1.high - pc).abs(), (d1.low - pc).abs()], axis=1).max(axis=1)
+    datr = float(tr.iloc[-14:].mean())                    # 완성 일봉 14개 = 어제까지
+    w = m5.iloc[-RANGE_REST_BARS:]
+    rng = float(w.high.max() - w.low.min())
+    if datr > 0 and rng >= RANGE_REST_MULT * datr:
+        return f"최근 2시간 범위 {rng:.1f}$ ≥ 일봉 ATR {datr:.1f}$ x {RANGE_REST_MULT:g}"
     return None
 
 
@@ -541,13 +571,15 @@ def use_live_paths():
 
 
 def main():
-    global bot
+    global bot, range_rest_on, SL_USD
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true", help="주문 없이 신호만 계산")
     ap.add_argument("--live", action="store_true", help="실계좌에서도 실행 (기본은 데모 전용)")
     args = ap.parse_args()
     if args.live:
         use_live_paths()
+        range_rest_on = RANGE_REST_LIVE
+        SL_USD = SL_USD_LIVE
     bot = Trader(STRATEGY, SYMBOL, MAGIC, DEVIATION, LOG_DIR, "demo", live=args.live)
     bot.bridge_id = BRIDGE_ID
     acc = bot.start(args.dry_run)
@@ -564,7 +596,8 @@ def main():
               + (f"최근 {WINRATE_N}건 승률 {WINRATE_MIN:g}% 미만 쉼 (지금 {n}건 {rate:.1f}%{', 쉬는 중' if is_paused(wr) else ''})"
                  if WINRATE_PAUSE else f"승률 쉬기 꺼짐 (최근 {n}건 {rate:.1f}%)")
               + (", 5분봉 SAR 반대 전환이면 청산" if SAR_EXIT else "")
-              + f", 과열 거르기 (뚫은 SAR에서 {MAX_EXT} ATR / 새 SAR 점까지 {MAX_RISK} ATR 초과면 쉼)")
+              + f", 과열 거르기 (뚫은 SAR에서 {MAX_EXT} ATR / 새 SAR 점까지 {MAX_RISK} ATR 초과면 쉼)"
+              + (f", 급등락 직후 쉬기 (최근 2시간 범위 ≥ 일봉 ATR x{RANGE_REST_MULT:g})" if range_rest_on else ""))
     log.info(f"시작: 계좌 {acc.login} ({acc.server}, {kind}) 잔고 {acc.balance} {acc.currency}, {SYMBOL} "
              f"SL {SL_USD} TP {TP_USD}, {'마틴 ' if MARTIN else ''}{lots}, {limits}{' [DRY-RUN]' if args.dry_run else ''}"
              f", 텔레그램 {'켜짐' if bot.tg.enabled else '꺼짐'}")
@@ -693,6 +726,8 @@ def main():
                         log.info(f"5분봉 ATR {a:.2f}$ > 20일 중앙값 {ref:.2f}$ x {MAX_ATR_MULT:g} (급변동)이라 신규 진입 안 함")
                     elif ov := overextended(m5, side):
                         log.info(f"과열 ({ov})이라 신규 진입 안 함")
+                    elif rr := range_rest(m5):
+                        log.info(f"급등락 직후 ({rr})라 신규 진입 안 함")
                     elif reason := risk_block(now, lot_for(level, base)):
                         log.info(f"안전장치: {reason} -> 신규 진입 안 함")
                         if risk_notified != now.date():
