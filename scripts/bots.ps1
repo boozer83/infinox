@@ -7,7 +7,7 @@ param([ValidateSet("demo", "live", "all", "status", "stop-demo", "stop-live")][s
 
 $Dir = Split-Path $PSScriptRoot -Parent   # infinox 폴더 (이 파일은 scripts/ 안)
 $Bots = @("demo_trader.py", "trend_trader.py", "asia_breakout_trader.py", "report_bot.py")
-$DemoSet = @("hedge_martin_trader.py", "news_trader.py", "news_surprise_paper.py", "index_trader.py --symbol NAS100", "index_trader.py --symbol GER40", "sar_martin_trader.py", "trend_trader.py --symbol XETUSD", "asia_breakout_trader.py --symbol XAUEUR", "pa_master_trader.py")   # extra bots on the demo account
+$DemoSet = @("hedge_martin_trader.py", "news_trader.py", "news_surprise_paper.py", "index_trader.py --symbol NAS100", "index_trader.py --symbol GER40", "sar_martin_trader.py", "trend_trader.py --symbol XETUSD", "asia_breakout_trader.py --symbol XAUEUR", "pa_master_trader.py", "sar_dom_trader.py --mode skip", "sar_dom_trader.py --mode flip", "gsr_trader.py")   # extra bots on the demo account
 $LiveExtra = @("asia_breakout_trader.py --symbol XAUEUR", "trend_trader.py --symbol XETUSD", "index_trader.py --symbol NAS100", "index_trader.py --symbol GER40", "news_surprise_paper.py")   # live account too (2026-10-25 user request; news_trader.py demo only, sar_martin / hedge have --live but on hold), on top of $Bots
 $DemoTerminal = "C:\Program Files\Infinox MetaTrader 5 Terminal\terminal64.exe"
 $LiveEnv = @{ MT5_TERMINAL_PATH = "C:\MT5_LIVE\terminal64.exe"; MT5_PORTABLE = "1"; MT5_SYMBOL = "XAUUSD#" }

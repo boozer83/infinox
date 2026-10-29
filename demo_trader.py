@@ -134,6 +134,12 @@ WINRATE_N = 200
 WINRATE_MIN = 71.4
 # 반대 콩 청산: 보유 중 5분봉 SAR이 반대로 전환되면 시장가 청산
 SAR_EXIT = True
+# 틱 우세 (2026-10-29 데모 실험, backtests/sar_tick_dom.py): 진입 직전 DOM_SEC초 동안 Bid가 오른 틱 / (오른 + 내린 틱)
+# 기본은 끔. sar_dom_trader.py만 켬 (skip: 신호와 반대 우세면 쉬기, flip: 반대 우세면 우세 방향으로. flip 거래는 반대 콩 청산 안 함)
+DOM_MODE = None
+DOM_SEC = 60
+DOM_TH = 0.6              # >= 0.6 매수 우세, <= 0.4 매도 우세, 그 사이는 우세 없음 (신호대로)
+FLIP_TAG = "DOM flip"     # flip 진입 주문 comment 앞부분 (반대 콩 청산에서 빼는 표시)
 FRIDAY_CLOSE = "23:30"
 # 실계좌 안전장치
 MAX_LOT = 1.0             # 한 번에 진입할 최대 lot (넘으면 이 lot으로 깎아서 진입)
@@ -367,6 +373,47 @@ def open_virtual(wr, side, bar):
     log.info(f"승률 쉬기 중 (최근 {n}건 {rate:.1f}%) -> 가상 {'매수' if side == 1 else '매도'} @ {entry}")
 
 
+def tick_dominance():
+    """직전 DOM_SEC초 Bid 틱 방향 -> (우세 1/-1/0, 오른 틱 비율, 바뀐 틱 수), 조회 실패면 None"""
+    t = mt5.symbol_info_tick(bot.symbol)
+    if t is None or not t.time_msc:
+        return None
+    start = datetime.fromtimestamp((t.time_msc - DOM_SEC * 1000) / 1000, timezone.utc)
+    ticks = mt5.copy_ticks_from(bot.symbol, start, 100_000, mt5.COPY_TICKS_ALL)
+    if ticks is None:
+        return None
+    bid = ticks["bid"][ticks["time_msc"] <= t.time_msc]
+    d = bid[1:] - bid[:-1]
+    up, n = int((d > 0).sum()), int((d != 0).sum())
+    r = up / n if n else 0.5
+    return (1 if r >= DOM_TH else -1 if r <= 1 - DOM_TH else 0), r, n
+
+
+def dom_side(side):
+    """틱 우세를 보고 (진입 방향, comment 앞부분). 쉬면 방향 0"""
+    if not DOM_MODE:
+        return side, ""
+    res = tick_dominance()
+    if res is None:
+        log.warning(f"틱 우세 조회 실패 ({mt5.last_error()}) -> 신호대로 진입")
+        return side, ""
+    d, r, n = res
+    txt = f"직전 {DOM_SEC}초 오른 틱 {r:.0%} ({n}틱)"
+    if d == 0 or d == side:
+        log.info(f"틱 우세 {txt}: {'신호와 같음' if d else '우세 없음'} -> 신호대로 {side_name(side)}")
+        return side, ""
+    if DOM_MODE == "skip":
+        log.info(f"틱 우세 {txt}: 신호({side_name(side)})와 반대라 진입 안 함")
+        return 0, ""
+    log.info(f"틱 우세 {txt}: 신호({side_name(side)})와 반대라 우세 방향 {side_name(-side)}로 진입 (반대 콩 청산 안 함)")
+    return -side, FLIP_TAG
+
+
+def sar_exitable(p):
+    """반대 콩 청산 대상인지 (틱 우세 flip 거래는 SAR 반대 방향으로 들어간 거라 빼고 손절·익절로만)"""
+    return not (p.comment or "").startswith(FLIP_TAG)
+
+
 def my_positions():
     """이 봇 포지션 목록, 조회 실패면 None (bot.positions()는 실패도 빈 목록이라 '포지션 없음'과 구분 안 됨)"""
     p = mt5.positions_get(symbol=bot.symbol)
@@ -451,8 +498,8 @@ def protect(pos):
             bot.send(f"⚠️ 포지션 {p.ticket}에 서버 SL/TP가 없어서 다시 걸었어요 (SL {sl} / TP {tp}, {'완료' if ok else '실패, 다시 시도'})")
 
 
-def place(side, lot, level, signal_bar, signal_price):
-    f = bot.open(side, lot, f"SAR RSI50 H1 L{level}", sl_dist=SL_USD, tp_dist=TP_USD)
+def place(side, lot, level, signal_bar, signal_price, tag=""):
+    f = bot.open(side, lot, f"{tag} L{level}" if tag else f"SAR RSI50 H1 L{level}", sl_dist=SL_USD, tp_dist=TP_USD)
     time.sleep(0.5)
     pos = my_positions()
     if f is None:
@@ -481,7 +528,8 @@ def place(side, lot, level, signal_bar, signal_price):
         log.warning(f"주문 뒤 포지션 {f.res.order}를 아직 확인 못 함 (조회 실패·지연), 다음 조회 때 실제 lot·체결가로 맞춤")
     log.info(f"진입 {row['side']} {lot}lot ({level_text(level)}) @ {fill} "
              f"(신호봉 종가 {signal_price}, SL {sl}, TP {tp}, 스프레드 {row['spread']})")
-    bot.send(f"{'🟢 매수' if side == 1 else '🔴 매도'} 진입 {lot} lot ({level_text(level)})\n"
+    bot.send(f"{'🟢 매수' if side == 1 else '🔴 매도'} 진입 {lot} lot ({level_text(level)})"
+             + (" ⚠️ SAR 신호와 반대 (틱 우세 방향)" if tag else "") + "\n"
              f"전략: {STRATEGY_DESC}\n"
              f"가격 {fill} | SL {sl} | TP {tp}\n"
              f"최대 손실 약 {SL_USD * lot * 100:,.0f}$ / 목표 이익 약 {TP_USD * lot * 100:,.0f}$\n"
@@ -669,7 +717,7 @@ def main():
             # 반대 콩 청산이 실패했으면 닫힐 때까지 다시. sar_dir이 최신 완성 봉 것일 때만 (새 봉이 나왔는데 아직 계산 전이면 안 함)
             if (SAR_EXIT and sar_dir and not args.dry_run and time.time() - last_retry > RETRY_SEC
                     and m5 is not None and m5.time.iat[-1] == last_bar):
-                opp = [p for p in pos if side_of(p) != sar_dir]
+                opp = [p for p in pos if side_of(p) != sar_dir and sar_exitable(p)]
                 if opp:
                     last_retry = time.time()
                     for p in opp:
@@ -691,7 +739,7 @@ def main():
                              + (f" -> 신호 {side_name(side)}" if side else ""))
                 if SAR_EXIT and not args.dry_run:
                     for p in pos:
-                        if side_of(p) != sar_dir:
+                        if side_of(p) != sar_dir and sar_exitable(p):
                             close_retry(p, "sar exit", "반대 콩 청산")
                             last_retry = time.time()
                     pos = my_positions()
@@ -737,8 +785,8 @@ def main():
                         open_virtual(wr, side, bar.strftime("%Y-%m-%d %H:%M"))
                     elif (late := (bot.clock.now() - (bar + pd.Timedelta(minutes=5))).total_seconds()) > ENTRY_LATE_SEC or not fresh_tick():
                         log.info(f"주문 직전 다시 확인: 신호 봉 마감 {late:.0f}초 뒤 / 시세 {'정상' if fresh_tick() else '멈춤'} -> 진입 안 함")
-                    else:
-                        open_row = place(side, lot_for(level, base), level, bar.strftime("%Y-%m-%d %H:%M"), close)
+                    elif (dom := dom_side(side))[0]:
+                        open_row = place(dom[0], lot_for(level, base), level, bar.strftime("%Y-%m-%d %H:%M"), close, dom[1])
                         save_sig()
             time.sleep(POLL_SEC)
 
