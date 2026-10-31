@@ -102,7 +102,7 @@ def execute(specs, store):
         j = k + 1 + idx[0] if idx.size else x
         pnl = (price[j] - e) * side
         out.append((t[k], t[j], side, pnl, pnl / risk, risk))
-        busy = t[j]
+        busy = s["exit"] if j == x else t[j]      # 시간 청산이면 신호 시각까지만 (같은 시각 반대 진입을 건너뛰지 않게)
     tr = pd.DataFrame(out, columns=["open_ms", "close_ms", "side", "pnl_oz", "r", "risk"])
     tr["close"] = pd.to_datetime(tr.close_ms, unit="ms")
     return tr
