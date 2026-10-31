@@ -19,6 +19,7 @@ FF_URL = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
 FF_CSV = Path(__file__).resolve().parent.parent / "data" / "ff_calendar.csv"
 FF_EVERY = 6 * 3600
 MT5_CSV = Path(os.environ["APPDATA"]) / "MetaQuotes" / "Terminal" / "Common" / "Files" / "calendar_all.csv"
+NY = "America/New_York"
 IMPACT = {"High": "high", "Medium": "moderate", "Low": "low", "Holiday": "none"}
 log = logging.getLogger("calendar")
 _last_try = 0.0
@@ -57,11 +58,20 @@ def ff_events():
     return pd.read_csv(FF_CSV, parse_dates=["time"])
 
 
+def mt5_server_times(raw, path=MT5_CSV):
+    """MT5 캘린더는 모든 날짜를 '내보낸 때의 서버 시차'로 보여줌 -> 그 날짜의 서버시간(뉴욕 + 7시간)으로 바꿈.
+    내보낸 때 = 파일 수정 시각. 예: 서머타임(GMT+3) 때 내보낸 11/6 고용지표 16:30 -> 겨울(GMT+2) 15:30
+    (2026-10-31 수정: 전에는 앞 일정을 그대로 써서, 서머타임이 끝나는 주의 일정이 1시간 늦게 잡혔음)"""
+    off = pd.Timestamp(Path(path).stat().st_mtime, unit="s", tz="UTC").tz_convert(NY).utcoffset() + pd.Timedelta(hours=7)
+    utc = (raw - off).dt.tz_localize("UTC")
+    return utc.dt.tz_convert(NY).dt.tz_localize(None) + pd.Timedelta(hours=7)
+
+
 def mt5_events():
     if not MT5_CSV.exists():
         return pd.DataFrame(columns=["time", "currency", "importance", "event"])
     c = pd.read_csv(MT5_CSV, encoding="cp949")
-    c["time"] = pd.to_datetime(c.time, format="%Y.%m.%d %H:%M")   # 앞으로의 일정은 지금 시차 그대로라 보정 없음
+    c["time"] = mt5_server_times(pd.to_datetime(c.time, format="%Y.%m.%d %H:%M"))
     return c
 
 

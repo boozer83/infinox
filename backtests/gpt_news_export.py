@@ -11,6 +11,7 @@ import numpy as np
 import pandas as pd
 
 import backtests.long_period as lb
+from common.news_calendar import mt5_server_times
 
 OUT = Path(__file__).resolve().parents[2] / "gpt_data" / "news"
 CAL = os.path.join(os.environ["APPDATA"], "MetaQuotes/Terminal/Common/Files/calendar_all.csv")
@@ -21,10 +22,9 @@ def calendar():
     c = pd.read_csv(CAL, encoding="cp949")
     c["event"] = c.event.str.strip()
     raw = pd.to_datetime(c.time, format="%Y.%m.%d %H:%M")
-    # 캘린더는 과거 일정도 지금 시차(GMT+3)로 보여줌 -> 미국 서머타임이 아닌 날은 1시간 당김
-    dst = raw.dt.tz_localize("America/New_York", ambiguous=True, nonexistent="shift_forward").map(lambda x: bool(x.dst()))
+    # 캘린더는 과거 일정도 내보낸 때의 시차로 보여줌 -> 그 날짜의 서버시간으로 (겨울에 다시 내보내도 맞게, 2026-10-31)
     c.insert(0, "time_raw", raw)
-    c["time"] = raw - pd.to_timedelta((~dst.values).astype(int), unit="h")
+    c["time"] = mt5_server_times(raw, CAL)
     c["all_day"] = (raw.dt.hour == 0) & (raw.dt.minute == 0)       # 시각 없는 하루 종일 일정
     cols = ["time", "time_raw", "all_day", "importance", "country", "currency", "event", "actual", "forecast", "previous", "event_id"]
     return c[cols].sort_values("time").reset_index(drop=True)
