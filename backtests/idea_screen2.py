@@ -13,7 +13,13 @@
                        손절 = 최근 3봉 극값 + 0.5 ATR, 익절 = 종가가 VWAP 닿으면 청산 또는 1.5R, 23:00 시간 청산
                        미국 중요 지표 앞뒤 30분은 진입 안 함
 
-사용법: python -m backtests.idea_screen2 [3 4 5]
+ 6. 단타 압축 돌파 (2026-10-31 사용자: 단타 전략 원함) : 직전 완성 15분봉 볼린저폭이 최근 100봉 중 하위 20%일 때
+                       5분봉 종가가 직전 20봉 고가/저가 + 0.1 x 15분봉 ATR을 넘으면 그 방향
+                       손절 1.0 / 1.5 x 15분봉 ATR, 익절 1.5R / 2R, 진입 30 / 90분 뒤 시간 청산, 미국 중요 지표 앞뒤 15분 진입 안 함
+ 7. 뉴스 후 2차 돌파 단타판 : 3번과 같은 진입 (15분 범위, 발표 30~120분 재돌파), 손절 범위 반대편 / 1.0 x 15분봉 ATR,
+                       익절 1.5R / 2R, 진입 60 / 120분 뒤 시간 청산
+
+사용법: python -m backtests.idea_screen2 [3 4 5 6 7]
 """
 import itertools
 import sys
@@ -37,7 +43,7 @@ def usd_high_times():
 
 
 # ---------------------------------------------------------------- 3. 뉴스 후 2차 돌파
-def news_second(m5, h1, rng_min, sl_mode, tp_r):
+def news_second(m5, h1, rng_min, sl_mode, tp_r, sl_mult=1.5, hold_min=None):
     c = calendar()
     rel = np.sort(c[(c.currency == "USD") & (c.importance == "high") & c.event.isin(NEWS)].time.unique())
     t = m5.time.values
@@ -65,9 +71,9 @@ def news_second(m5, h1, rng_min, sl_mode, tp_r):
             k = np.searchsorted(h1_t, t[i], side="right") - 2            # 진입 전에 끝난 1시간봉
             if k < 14:
                 continue
-            sl = {"sl_dist": 1.5 * h1_atr[k]}
-        specs.append({"entry": tm[i + 1], "side": side, "exit": to_ms(pd.Series([r + pd.Timedelta(hours=4)]))[0],
-                      "tp_r": tp_r, **sl})
+            sl = {"sl_dist": sl_mult * h1_atr[k]}
+        ex = to_ms(pd.Series([r + pd.Timedelta(hours=4)]))[0] if hold_min is None else tm[i + 1] + hold_min * 60_000
+        specs.append({"entry": tm[i + 1], "side": side, "exit": ex, "tp_r": tp_r, **sl})
     return specs
 
 
@@ -135,6 +141,30 @@ def vwap_dev(b, minutes, k, tp_mode, news_ms):
     return specs
 
 
+# ---------------------------------------------------------------- 6. 단타 압축 돌파
+def scalp_squeeze(m5, m15, sl_k, tp_r, hold_min, news_ms):
+    mid, sd = m15.close.rolling(20).mean(), m15.close.rolling(20).std()
+    sq15 = ((4 * sd / mid).rolling(100).rank(pct=True) <= 0.2).values
+    a15 = atr(m15).values
+    end15 = to_ms(m15.time) + 15 * 60_000
+    t = to_ms(m5.time)
+    j = np.searchsorted(end15, t + 5 * 60_000, side="right") - 1         # 5분봉 마감 때 이미 끝난 15분봉
+    ok = j >= 0
+    sq, a = np.where(ok, sq15[np.maximum(j, 0)], False), np.where(ok, a15[np.maximum(j, 0)], np.nan)
+    hh, ll = m5.high.rolling(20).max().shift(1).values, m5.low.rolling(20).min().shift(1).values
+    c = m5.close.values
+    up, dn = sq & (c > hh + 0.1 * a), sq & (c < ll - 0.1 * a)
+    specs = []
+    for i, side in sorted([(i, 1) for i in np.flatnonzero(up)] + [(i, -1) for i in np.flatnonzero(dn)]):
+        if i + 1 >= len(m5) or not a[i] > 0:
+            continue
+        k = np.searchsorted(news_ms, t[i])
+        if (k < len(news_ms) and news_ms[k] - t[i] <= 900_000) or (k > 0 and t[i] - news_ms[k - 1] <= 900_000):
+            continue
+        specs.append({"entry": t[i + 1], "side": side, "exit": t[i + 1] + hold_min * 60_000, "sl_dist": sl_k * a[i], "tp_r": tp_r})
+    return specs
+
+
 def main():
     pick = set(sys.argv[1:])
     m5 = m5_bars()
@@ -150,6 +180,10 @@ def main():
                              for tf, cm, ex in P(["H4", "D1"], ["ATR", "볼린저폭"], ["3R", "10봉 반대"])],
         "5. VWAP 과도 이탈": [(f"{tf} 거리{k} 청산 {tp}", lambda tf=tf, k=k, tp=tp: vwap_dev(bars[tf], int(tf[1:]), k, tp, news_ms))
                             for tf, k, tp in P(["M5", "M15"], [2.0, 3.0], ["VWAP", "1.5R"])],
+        "6. 단타 압축 돌파": [(f"손절 {k}ATR {tp}R {h}분", lambda k=k, tp=tp, h=h: scalp_squeeze(m5, bars["M15"], k, tp, h, news_ms))
+                            for k, tp, h in P([1.0, 1.5], [1.5, 2.0], [30, 90])],
+        "7. 뉴스 2차 돌파 단타": [(f"손절 {sm} {tp}R {h}분", lambda sm=sm, tp=tp, h=h: news_second(m5, bars["M15"], 15, sm, tp, 1.0, h))
+                               for sm, tp, h in P(["범위", "1.0ATR"], [1.5, 2.0], [60, 120])],
     }
     rows, picks = [], []
     for fam, grid in grids.items():
