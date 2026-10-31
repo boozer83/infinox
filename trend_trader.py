@@ -8,6 +8,9 @@
 - 손절: 진입가 ± 3 x ATR(14, 4시간봉)를 주문과 함께 서버에 설정. 익절 없음
 - 수량: 손절에 걸리면 잔고의 RISK_PCT(2%)를 잃도록 계산 (0.01 단위 내림)
 - 포지션은 한 번에 1개, 주말에도 보유 (백테스트와 동일)
+- 진입 주문이 "Market closed"(10018)로 실패하면 (봉 시작 직후 일일 휴장 등) 같은 4시간봉 안에서 새 틱이 오면
+  1분 간격으로 최대 RETRY_MAX번 다시 시도 (2026-10-31 추가. 이더 10/30 06:00 신호를 놓치고 4시간 뒤 진입한 일 때문.
+  백테스트는 신호 다음 봉 시가 진입이라 재시도가 더 가까움). 새 봉이 오면 재시도는 버리고 그 봉의 판단을 따름
 - 구름 필터 (2026-10-21 추가): 돌파 방향이 4시간봉 일목 구름(9/26/52, 지금 봉 위치에 그려진 구름)과 같을 때만 진입
   (매수는 신호 봉 종가가 구름 위, 매도는 아래). 아니면 진입하지 않고 "그림자 포지션"으로 들고 있는 것처럼 기다림:
   그 사이 새 진입 안 함, 청산 신호나 손절가(진입가 ± 3 ATR)에 닿으면 그림자 끝 -> 다시 신호를 봄
@@ -57,6 +60,8 @@ MAGIC = 20261018
 SYMBOL_MAGIC = {"XETUSD": 20261023}   # --symbol 로 다른 종목을 돌릴 때 매직 넘버
 DEVIATION = 50
 POLL_SEC = 2.0
+RETRY_SEC = 60        # Market closed 진입 재시도 간격 (초)
+RETRY_MAX = 10        # 같은 봉에서 재시도 최대 횟수
 BARS = 300
 
 LOG_DIR = Path(__file__).resolve().parent / "logs" / "trend_log"
@@ -234,6 +239,7 @@ def main():
     if shadow:
         log.info(f"그림자 포지션 이어받음: {shadow}")
     last_bar = None
+    retry = None          # Market closed로 못 들어간 진입: {"args": place 인자, "at": 마지막 시도, "tick": 그때 틱 ms, "n": 횟수}
     with bot.running("⏸ 추세추종 종료 (열린 포지션은 서버 손절로 보호됨. 추세 종료 청산은 다시 실행해야 작동)"):
         while True:
             bot.keep_alive()
@@ -243,9 +249,21 @@ def main():
             if shadow and shadow_sl_hit(shadow):
                 shadow = end_shadow(shadow, "손절", shadow["sl"])
 
+            if retry and not bot.positions() and time.time() - retry["at"] >= RETRY_SEC:
+                tick = mt5.symbol_info_tick(SYMBOL)
+                if tick and tick.time_msc > retry["tick"]:     # 시장이 다시 열려 새 틱이 왔을 때만
+                    retry["n"] += 1
+                    log.info(f"Market closed 진입 재시도 {retry['n']}/{RETRY_MAX}")
+                    open_row = place(*retry["args"])
+                    if open_row or "10018" not in bot.last_err or retry["n"] >= RETRY_MAX:
+                        retry = None
+                    else:
+                        retry.update(at=time.time(), tick=tick.time_msc)
+
             df = bot.rates(TIMEFRAME, BARS)
             if df is not None and len(df) > N_ENTRY + 20 and df.time.iat[-1] != last_bar:
                 last_bar = df.time.iat[-1]
+                retry = None
                 entry, exit_long, exit_short, a, desc = compute(df)
                 bar = df.time.iat[-1]
                 log.info(f"4시간봉 {bar:%m-%d %H:%M}: {desc}"
@@ -282,7 +300,12 @@ def main():
                             bot.send(f"👻 {side_name(entry)} 신호지만 종가 {c:.2f}가 4시간봉 {where} (구름 {low:.2f}~{top:.2f})\n"
                                      f"진입하지 않고, 추세가 끝나거나 손절가 {shadow['sl']}에 닿을 때까지 다음 신호를 쉽니다")
                         else:
-                            open_row = place(entry, a, bar.strftime("%Y-%m-%d %H:%M"), c)
+                            args_ = (entry, a, bar.strftime("%Y-%m-%d %H:%M"), c)
+                            open_row = place(*args_)
+                            if open_row is None and "10018" in bot.last_err:
+                                tick = mt5.symbol_info_tick(SYMBOL)
+                                retry = {"args": args_, "at": time.time(), "tick": tick.time_msc if tick else 0, "n": 0}
+                                bot.send(f"🔁 시장이 닫혀 있어 같은 4시간봉 안에서 새 시세가 오면 1분마다 다시 진입을 시도합니다 (최대 {RETRY_MAX}번)")
             time.sleep(POLL_SEC)
 
 

@@ -100,6 +100,7 @@ class Trader:
         self.clock = None
         self.acc = None
         self.bridge_id = None          # MT4 따라하기 전략 이름 (None이면 안 보냄)
+        self.last_err = ""             # 마지막 진입 실패 이유 (open()이 None일 때 재시도 판단용)
         self.dry_run = False
 
     # ---- 시작 / 연결
@@ -278,11 +279,14 @@ class Trader:
     def open(self, side, lot, comment, sl_dist=None, tp_dist=None):
         """증거금 확인 후 시장가 진입. 실패하면 알리고 None. 데모 체결이 확인되면 MT4에 진입 신호
         (데모가 못 들어간 포지션을 MT4만 들고 있으면 파이썬 청산 신호가 안 나가서)"""
+        self.last_err = ""
         if not self.margin_ok(side, lot):
+            self.last_err = "margin"
             return None
         sent_ms = int(time.time() * 1000)              # MT4 통로 시각 = 주문 보낸 때 (응답이 늦었으면 MT4가 늦은 신호로 거름)
         f = self.deal(side, lot, comment, sl_dist=sl_dist, tp_dist=tp_dist)
         if not f.ok:
+            self.last_err = f.err
             self.log.error(f"주문 실패: {f.err}")
             self.send(f"❗ 주문 실패 ({side_name(side)} {lot} lot): {f.err}")
             return None

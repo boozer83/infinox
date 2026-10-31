@@ -47,6 +47,7 @@ from config import SYMBOL
 
 MAX_LAG = 10            # 발표 뒤 이 초 안에 판단해야 진입 (백테스트: 10초까지 플러스)
 GROUP_WAIT = 0.5        # 같은 시각 지표를 기다리는 시간 (첫 지표를 읽은 뒤, 초)
+FEED_LATE = 120         # 일정에 있는 (점수 낼) 발표의 실제치가 이 초 넘게 안 오면 텔레그램 알림 (2026-10-31, 10/26~29 캘린더 지연 때문. 데모 실행만)
 ENTRY_DELAY_MS = 300    # 판단 뒤 이만큼 지난 틱으로 진입 (실제 주문 지연 가정, 백테스트 +0.3초와 같음)
 POLL_SEC = 0.1
 STRATEGY = "서프라이즈 모의"
@@ -382,6 +383,8 @@ def main():
         mt4_news(bot.clock.now())
     sched, sched_at = schedule_groups(), time.time()
     groups, entries, pending, warned = {}, [], [], False
+    late_warned = set()     # 실제치 안 온다고 이미 알린 발표 시각
+    started = bot.clock.now()   # 시작 전에 지난 발표는 알리지 않음 (재시작하면 groups가 비어서)
     mode = (f"[기본] |S| >= {sp.S_BASE:g}만 실제 주문, 1,000$당 {LOT_PER_1000} lot, 만일용 손절 {SAFETY_SL:g}$, "
             f"큰이익추적 {TRAIL_ON:g}/{TRAIL_GAP:g}/{ARM_MIN}분" if LIVE else "주문 없음")
     bot.send(f"▶️ 시작 ({acc.login}, {mode})\n발표 뒤 {MAX_LAG}초 안에 받은 실제치로 |S| >= {sp.S_MIN:g}이면 서프라이즈 방향 모의 진입 "
@@ -399,6 +402,17 @@ def main():
                     warned = True
                 elif age is not None and age < 120:
                     warned = False
+                if not LIVE:            # 실계좌 실행도 같은 파일을 읽으므로 알림은 데모 실행에서 한 번만
+                    now0 = bot.clock.now()
+                    for rel, items in sched.items():
+                        late = (now0 - rel).total_seconds()
+                        if FEED_LATE < late < 1800 and rel > started and rel not in groups and rel not in late_warned \
+                                and sp.scored_keys([(k, fc) for k, fc, _ in items], sd, pol):
+                            late_warned.add(rel)
+                            names = ", ".join(sorted({k for k, _, _ in items}))
+                            bot.log.warning(f"{rel:%H:%M} 발표 실제치가 {late:.0f}초째 안 들어옴 ({names})")
+                            bot.send(f"⚠️ {rel:%H:%M}(서버시간) 발표 실제치가 {late / 60:.0f}분째 MT5 캘린더에 안 들어옵니다 ({names})\n"
+                                     f"캘린더가 늦으면 서프라이즈 봇이 이 발표를 거래하지 못합니다")
                 if time.time() - sched_at > 3600:
                     sched, sched_at = schedule_groups(), time.time()
                     if not LIVE:
